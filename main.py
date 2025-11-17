@@ -1,6 +1,7 @@
 import sys
 from pathlib import Path
 
+from PySide6.QtGui import QAction
 from PySide6 import QtWidgets
 
 from core.loader import load_mesh
@@ -17,7 +18,7 @@ def run_gui() -> None:
     app = QtWidgets.QApplication(sys.argv)
     window = MainWindow()
     window.show()
-    app.exec()
+    sys.exit(app.exec())
 
 
 if __name__ == "__main__":
