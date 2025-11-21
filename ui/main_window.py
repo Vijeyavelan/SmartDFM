@@ -1,33 +1,41 @@
 # ui/main_window.py
 
 import sys
+import os
 import numpy as np
 
 from PySide6.QtWidgets import (
     QApplication,
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QMenuBar,
     QFileDialog, QMessageBox, QTableWidget, QTableWidgetItem,
-    QLabel, QHeaderView, QPushButton
+    QLabel, QHeaderView, QPushButton, QDoubleSpinBox
 )
 from PySide6.QtGui import QAction
 
-import pyqtgraph as pg
 import pyqtgraph.opengl as gl
 
 from core.stl_loader import load_stl
-from core.dfm_checks import run_all_checks
+from core.dfm_engine import run_all_checks
+from core.dfm_checks.thickness import (
+    MIN_GLOBAL_THICKNESS,
+    LOCAL_MIN_THICKNESS,
+)
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
 
-        self.setWindowTitle("SmartDFM - STL Viewer")
+        self.setWindowTitle("SmartDFM - STL Viewer (Injection Molding DFM)")
         self.resize(1200, 800)
 
         # ---- Status bar ----
         self.status = self.statusBar()
         self.status.showMessage("Ready")
+
+        # Store last analysis and file path (for export + re-run)
+        self.last_dfm_results = None
+        self.last_file_path = None
 
         # ---- Central widget ----
         central_widget = QWidget()
@@ -38,9 +46,17 @@ class MainWindow(QMainWindow):
 
         # ---- Top button bar ----
         button_bar = QHBoxLayout()
+
+        # Open STL button
         self.open_button = QPushButton("Open STL…")
         self.open_button.clicked.connect(self.open_stl_dialog)
         button_bar.addWidget(self.open_button)
+
+        # Export DFM Report button
+        self.export_button = QPushButton("Export DFM Report…")
+        self.export_button.clicked.connect(self.export_dfm_report)
+        button_bar.addWidget(self.export_button)
+
         button_bar.addStretch()
         root_layout.addLayout(button_bar)
 
@@ -51,7 +67,7 @@ class MainWindow(QMainWindow):
         # ---- 3D View ----
         self.view = gl.GLViewWidget()
         self.view.setBackgroundColor((0.9, 0.9, 0.9, 1.0))
-        self.view.opts['distance'] = 40
+        self.view.opts["distance"] = 40
         content_layout.addWidget(self.view, stretch=4)
 
         # Add a basic grid so you see orientation
@@ -67,8 +83,38 @@ class MainWindow(QMainWindow):
         self.dfm_panel = QWidget()
         dfm_layout = QVBoxLayout(self.dfm_panel)
 
-        self.lbl_title = QLabel("<b>DFM Summary</b>")
+        self.lbl_title = QLabel("<b>Injection Molding DFM Summary</b>")
         dfm_layout.addWidget(self.lbl_title)
+
+        # Threshold controls
+        self.lbl_thresholds = QLabel("<b>Thickness Thresholds (model units)</b>")
+        dfm_layout.addWidget(self.lbl_thresholds)
+
+        # Global thickness threshold spin box
+        global_row = QHBoxLayout()
+        global_row.addWidget(QLabel("Global min thickness:"))
+        self.spin_global = QDoubleSpinBox()
+        self.spin_global.setDecimals(3)
+        self.spin_global.setSingleStep(0.1)
+        self.spin_global.setRange(0.01, 1000.0)
+        self.spin_global.setValue(MIN_GLOBAL_THICKNESS)
+        self.spin_global.valueChanged.connect(self.on_threshold_changed)
+        global_row.addWidget(self.spin_global)
+        dfm_layout.addLayout(global_row)
+
+        # Local thickness threshold spin box
+        local_row = QHBoxLayout()
+        local_row.addWidget(QLabel("Local wall thickness:"))
+        self.spin_local = QDoubleSpinBox()
+        self.spin_local.setDecimals(3)
+        self.spin_local.setSingleStep(0.1)
+        self.spin_local.setRange(0.01, 1000.0)
+        self.spin_local.setValue(LOCAL_MIN_THICKNESS)
+        self.spin_local.valueChanged.connect(self.on_threshold_changed)
+        local_row.addWidget(self.spin_local)
+        dfm_layout.addLayout(local_row)
+
+        dfm_layout.addSpacing(10)
 
         # Global thickness labels
         self.lbl_global_status = QLabel("Global Thickness: -")
@@ -83,6 +129,12 @@ class MainWindow(QMainWindow):
         dfm_layout.addWidget(self.lbl_local_status)
         dfm_layout.addWidget(self.lbl_local_min)
         dfm_layout.addWidget(self.lbl_local_thin_count)
+
+        # Sharp corners labels
+        self.lbl_corner_status = QLabel("Sharp Corners: -")
+        self.lbl_corner_count = QLabel("Sharp Edges: -")
+        dfm_layout.addWidget(self.lbl_corner_status)
+        dfm_layout.addWidget(self.lbl_corner_count)
 
         # DFM results table
         self.dfm_table = QTableWidget()
@@ -109,37 +161,43 @@ class MainWindow(QMainWindow):
         open_action = QAction("Open STL...", self)
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self.open_stl_dialog)
-
         file_menu.addAction(open_action)
+
+        export_action = QAction("Export DFM Report...", self)
+        export_action.triggered.connect(self.export_dfm_report)
+        file_menu.addAction(export_action)
 
     # ------------------------------------------------------------------
     # File open
     # ------------------------------------------------------------------
     def open_stl_dialog(self):
-        """
-        Open a file dialog to choose STL and then load + display it.
-        """
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Open STL File",
             "",
             "STL Files (*.stl);;All Files (*.*)"
         )
-
         if not file_path:
-            return  # user cancelled
-
+            return
         self.load_and_display_stl(file_path)
+
+    # ------------------------------------------------------------------
+    # Threshold changes
+    # ------------------------------------------------------------------
+    def on_threshold_changed(self, value):
+        if self.last_file_path is None:
+            return
+        self.load_and_display_stl(self.last_file_path)
 
     # ------------------------------------------------------------------
     # DFM panel update
     # ------------------------------------------------------------------
     def update_dfm_panel(self, dfm_results: dict):
-        """Update the right-side DFM summary panel and table."""
         checks = dfm_results.get("checks", {})
 
         global_info = checks.get("global_thickness", {})
         local_info = checks.get("local_thickness", {})
+        corner_info = checks.get("sharp_corners", {})
 
         g_status = global_info.get("status", "-")
         g_smallest = global_info.get("smallest_dimension", "-")
@@ -148,6 +206,9 @@ class MainWindow(QMainWindow):
         l_min = local_info.get("min_thickness", "-")
         l_count = local_info.get("num_thin_vertices", "-")
 
+        c_status = corner_info.get("status", "-")
+        c_num = corner_info.get("num_sharp_edges", "-")
+
         # Labels
         self.lbl_global_status.setText(f"Global Thickness: {g_status}")
         self.lbl_global_value.setText(f"Smallest Dimension: {g_smallest}")
@@ -155,6 +216,9 @@ class MainWindow(QMainWindow):
         self.lbl_local_status.setText(f"Local Thickness: {l_status}")
         self.lbl_local_min.setText(f"Min Local Thickness: {l_min}")
         self.lbl_local_thin_count.setText(f"Thin Vertices: {l_count}")
+
+        self.lbl_corner_status.setText(f"Sharp Corners: {c_status}")
+        self.lbl_corner_count.setText(f"Sharp Edges: {c_num}")
 
         # Table
         self.dfm_table.setRowCount(0)
@@ -170,6 +234,142 @@ class MainWindow(QMainWindow):
         add_row("Local Status", l_status)
         add_row("Min Local Thickness", l_min)
         add_row("Thin Vertices", l_count)
+        add_row("Sharp Corners Status", c_status)
+        add_row("Sharp Edges Count", c_num)
+
+    # ------------------------------------------------------------------
+    # Export DFM report
+    # ------------------------------------------------------------------
+    def export_dfm_report(self):
+        if self.last_dfm_results is None:
+            QMessageBox.information(
+                self,
+                "No Analysis",
+                "Please load an STL and run DFM analysis before exporting a report.",
+            )
+            return
+
+        base_name = "model"
+        if self.last_file_path:
+            base_name = os.path.splitext(os.path.basename(self.last_file_path))[0]
+
+        default_name = f"{base_name}_dfm_report.txt"
+
+        save_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save DFM Report",
+            default_name,
+            "Text Files (*.txt);;All Files (*.*)"
+        )
+
+        if not save_path:
+            return
+
+        report_dir = os.path.dirname(save_path)
+        report_base = os.path.splitext(os.path.basename(save_path))[0]
+        screenshot_path = os.path.join(report_dir, f"{report_base}_screenshot.png")
+
+        # Screenshot
+        try:
+            pixmap = self.grab()
+            pixmap.save(screenshot_path)
+            screenshot_note = f"Screenshot saved to: {screenshot_path}"
+        except Exception as e:
+            screenshot_note = f"Screenshot capture failed: {e}"
+
+        dfm = self.last_dfm_results
+        checks = dfm.get("checks", {})
+        bbox = dfm.get("bbox", {})
+        tri_count = dfm.get("triangles", "N/A")
+
+        global_info = checks.get("global_thickness", {})
+        local_info = checks.get("local_thickness", {})
+        corner_info = checks.get("sharp_corners", {})
+
+        lines = []
+        lines.append("SmartDFM – Injection Molding DFM Report")
+        lines.append("=" * 50)
+        lines.append("")
+        if self.last_file_path:
+            lines.append(f"File: {self.last_file_path}")
+        lines.append(f"Triangles: {tri_count}")
+        lines.append("")
+
+        # Thresholds
+        lines.append("Thresholds Used")
+        lines.append("-" * 30)
+        lines.append(f"  Global min thickness: {self.spin_global.value()}")
+        lines.append(f"  Local wall thickness: {self.spin_local.value()}")
+        lines.append("")
+
+        # Bounding box
+        min_b = bbox.get("min")
+        max_b = bbox.get("max")
+        ext = bbox.get("extents")
+        if min_b is not None and max_b is not None and ext is not None:
+            lines.append("Bounding Box (model units):")
+            lines.append(f"  Min: {min_b}")
+            lines.append(f"  Max: {max_b}")
+            lines.append(f"  Extents: {ext}")
+            lines.append("")
+
+        # Global thickness
+        lines.append("Global Thickness Check")
+        lines.append("-" * 30)
+        lines.append(f"  Status: {global_info.get('status', 'N/A')}")
+        lines.append(f"  Message: {global_info.get('message', '')}")
+        lines.append(f"  Smallest Dimension: {global_info.get('smallest_dimension', 'N/A')}")
+        lines.append(f"  Min Allowed: {global_info.get('min_allowed', 'N/A')}")
+        lines.append("")
+
+        # Local thickness
+        lines.append("Local Wall Thickness Check")
+        lines.append("-" * 30)
+        lines.append(f"  Status: {local_info.get('status', 'N/A')}")
+        lines.append(f"  Message: {local_info.get('message', '')}")
+        lines.append(f"  Min Thickness (approx): {local_info.get('min_thickness', 'N/A')}")
+        lines.append(f"  Thin Vertices: {local_info.get('num_thin_vertices', 'N/A')}")
+        lines.append(f"  Threshold: {local_info.get('threshold', 'N/A')}")
+        lines.append("")
+
+        # Sharp corners
+        lines.append("Sharp Corner Check (dihedral-angle based)")
+        lines.append("-" * 30)
+        lines.append(f"  Status: {corner_info.get('status', 'N/A')}")
+        lines.append(f"  Message: {corner_info.get('message', '')}")
+        lines.append(f"  Sharp Edges: {corner_info.get('num_sharp_edges', 'N/A')}")
+        lines.append(f"  Angle Threshold (deg): {corner_info.get('angle_threshold_deg', 'N/A')}")
+        lines.append(f"  Max Sharp Angle (deg): {corner_info.get('max_sharp_angle_deg', 'N/A')}")
+        lines.append("")
+
+        # Screenshot info
+        lines.append("Screenshot")
+        lines.append("-" * 30)
+        lines.append(f"  {screenshot_note}")
+        lines.append("")
+
+        # Summary
+        summary = dfm.get("summary", "")
+        if summary:
+            lines.append("Summary")
+            lines.append("-" * 30)
+            lines.append(f"  {summary}")
+            lines.append("")
+
+        try:
+            with open(save_path, "w") as f:
+                f.write("\n".join(lines))
+            QMessageBox.information(
+                self,
+                "Report Saved",
+                f"DFM report and screenshot saved.\n\nReport: {save_path}\nScreenshot: {screenshot_path}",
+            )
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Error Saving Report",
+                f"Could not save report:\n\n{e}",
+            )
 
     # ------------------------------------------------------------------
     # Load, DFM, and display
@@ -178,35 +378,49 @@ class MainWindow(QMainWindow):
         """
         Load STL, run DFM checks, and display mesh.
         Thin regions (by local wall thickness) are colored red.
+        Sharp corners are colored blue.
         """
         try:
-            # ---- Load STL geometry ----
             vertices, faces = load_stl(file_path)
 
             if vertices.size == 0 or faces.size == 0:
                 raise ValueError("STL file contains no geometry.")
 
-            # ---- Basic model info BEFORE centering/scaling ----
             tri_count = faces.shape[0]
             min_bounds = vertices.min(axis=0)
             max_bounds = vertices.max(axis=0)
             extents = max_bounds - min_bounds
 
-            # ---- Run DFM pipeline ----
-            dfm_results = run_all_checks(vertices, faces)
+            # Read thresholds from UI
+            min_global = self.spin_global.value()
+            min_local = self.spin_local.value()
+
+            # Run DFM pipeline
+            dfm_results = run_all_checks(
+                vertices,
+                faces,
+                min_global_thickness=min_global,
+                min_local_thickness=min_local,
+            )
             dfm_summary = dfm_results.get("summary", "DFM: no summary")
             checks = dfm_results.get("checks", {})
 
-            # Update right-side DFM panel
+            # Store for export / rerun
+            self.last_dfm_results = dfm_results
+            self.last_file_path = file_path
+
+            # Update DFM panel
             self.update_dfm_panel(dfm_results)
 
             local_chk = checks.get("local_thickness", {})
             global_chk = checks.get("global_thickness", {})
+            corner_chk = checks.get("sharp_corners", {})
 
             per_vertex_thickness = local_chk.get("per_vertex_thickness", None)
             threshold = local_chk.get("threshold", None)
+            corner_mask = corner_chk.get("corner_vertex_mask", None)
 
-            # ---- Center + normalize for display ----
+            # Center + normalize
             center = vertices.mean(axis=0)
             vertices_centered = vertices - center
 
@@ -214,32 +428,34 @@ class MainWindow(QMainWindow):
             if max_extent > 0:
                 vertices_centered = vertices_centered / max_extent * 10.0
 
-            # ---- Build per-vertex colors (grey default, red if thin) ----
-            vertex_colors = None
+            # Build per-vertex colors
+            vertex_colors = np.zeros((vertices.shape[0], 4), dtype=float)
+            vertex_colors[:, :] = [0.7, 0.7, 0.7, 1.0]  # grey default
+
+            thin_mask = np.zeros(vertices.shape[0], dtype=bool)
             if per_vertex_thickness is not None and threshold is not None:
                 t = np.array(per_vertex_thickness, dtype=float)
-
-                # Start with all grey
-                vertex_colors = np.zeros((vertices.shape[0], 4), dtype=float)
-                vertex_colors[:, :] = [0.7, 0.7, 0.7, 1.0]  # RGBA grey
-
                 finite = np.isfinite(t)
                 thin_mask = finite & (t < threshold)
-                # Thin vertices -> red
-                vertex_colors[thin_mask] = [1.0, 0.0, 0.0, 1.0]
 
-            # ---- Create mesh data (with optional vertex colors) ----
+            corner_vertex_mask = np.zeros(vertices.shape[0], dtype=bool)
+            if corner_mask is not None:
+                corner_vertex_mask = np.array(corner_mask, dtype=bool)
+
+            # Priority: thin (red) > sharp corner (blue) > grey
+            vertex_colors[thin_mask] = [1.0, 0.0, 0.0, 1.0]  # red
+            corner_only_mask = ~thin_mask & corner_vertex_mask
+            vertex_colors[corner_only_mask] = [0.0, 0.0, 1.0, 1.0]  # blue
+
             mesh_data = gl.MeshData(
                 vertexes=vertices_centered,
                 faces=faces,
-                vertexColors=vertex_colors
+                vertexColors=vertex_colors,
             )
 
-            # Remove old mesh item if exists
             if self.mesh_item is not None:
                 self.view.removeItem(self.mesh_item)
 
-            # ---- Create mesh item ----
             self.mesh_item = gl.GLMeshItem(
                 meshdata=mesh_data,
                 smooth=False,
@@ -249,7 +465,7 @@ class MainWindow(QMainWindow):
             )
             self.view.addItem(self.mesh_item)
 
-            # ---- Show DFM warnings as popups ----
+            # Warnings
             if global_chk and global_chk.get("status") == "WARNING":
                 QMessageBox.warning(
                     self,
@@ -264,10 +480,17 @@ class MainWindow(QMainWindow):
                     local_chk.get("message", "Local wall thickness issue detected."),
                 )
 
-            # ---- Update status bar ----
+            if corner_chk and corner_chk.get("status") == "WARNING":
+                QMessageBox.warning(
+                    self,
+                    "DFM Warning – Sharp Corners",
+                    corner_chk.get("message", "Sharp corners detected."),
+                )
+
+            # Status bar
             if hasattr(self, "status"):
                 msg = (
-                    f"Loaded: {file_path.split('/')[-1]}  |  "
+                    f"Loaded: {os.path.basename(file_path)}  |  "
                     f"Triangles: {tri_count}  |  "
                     f"Size (X×Y×Z): "
                     f"{extents[0]:.2f} × {extents[1]:.2f} × {extents[2]:.2f} (model units)  |  "
