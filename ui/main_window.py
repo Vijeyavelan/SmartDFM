@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QMenuBar,
     QFileDialog, QMessageBox, QTableWidget, QTableWidgetItem,
-    QLabel, QHeaderView, QPushButton, QDoubleSpinBox, QComboBox
+    QLabel, QHeaderView, QPushButton, QDoubleSpinBox, QComboBox, QCheckBox
 )
 from PySide6.QtGui import QAction
 
@@ -151,11 +151,13 @@ class MainWindow(QMainWindow):
         self.lbl_local_status = QLabel("Local Thickness: -")
         self.lbl_corner_status = QLabel("Sharp Corners: -")
         self.lbl_draft_status = QLabel("Draft Angle: -")
+        self.lbl_undercut_status = QLabel("Undercuts: -")
 
         dfm_layout.addWidget(self.lbl_global_status)
         dfm_layout.addWidget(self.lbl_local_status)
         dfm_layout.addWidget(self.lbl_corner_status)
         dfm_layout.addWidget(self.lbl_draft_status)
+        dfm_layout.addWidget(self.lbl_undercut_status)
 
         dfm_layout.addSpacing(8)
 
@@ -165,12 +167,14 @@ class MainWindow(QMainWindow):
         self.lbl_local_thin_count = QLabel("Thin Vertices: -")
         self.lbl_corner_count = QLabel("Sharp Edges: -")
         self.lbl_draft_bad_faces = QLabel("Faces below min draft: -")
+        self.lbl_undercut_faces = QLabel("Undercut Faces: -")
 
         dfm_layout.addWidget(self.lbl_global_value)
         dfm_layout.addWidget(self.lbl_local_min)
         dfm_layout.addWidget(self.lbl_local_thin_count)
         dfm_layout.addWidget(self.lbl_corner_count)
         dfm_layout.addWidget(self.lbl_draft_bad_faces)
+        dfm_layout.addWidget(self.lbl_undercut_faces)
 
         dfm_layout.addSpacing(10)
 
@@ -200,10 +204,39 @@ class MainWindow(QMainWindow):
         dfm_layout.addLayout(
             make_color_row("blue", "Sharp internal corners / edges")
         )
+        dfm_layout.addLayout(
+            make_color_row("yellow", "Undercuts / back-draft faces")
+        )
 
         dfm_layout.addSpacing(10)
 
-        # --- SECTION 5: Details Table (compact) ---
+        # --- SECTION 5: Issue visibility toggles ---
+        self.lbl_filters_header = QLabel("<b>Show in 3D view</b>")
+        dfm_layout.addWidget(self.lbl_filters_header)
+
+        self.chk_show_thickness = QCheckBox("Thin regions")
+        self.chk_show_thickness.setChecked(True)
+        self.chk_show_draft = QCheckBox("Draft issues")
+        self.chk_show_draft.setChecked(True)
+        self.chk_show_corners = QCheckBox("Sharp corners")
+        self.chk_show_corners.setChecked(True)
+        self.chk_show_undercuts = QCheckBox("Undercuts")
+        self.chk_show_undercuts.setChecked(True)
+
+        # When any checkbox changes, just re-run coloring on the current part
+        self.chk_show_thickness.stateChanged.connect(self.on_issue_filter_changed)
+        self.chk_show_draft.stateChanged.connect(self.on_issue_filter_changed)
+        self.chk_show_corners.stateChanged.connect(self.on_issue_filter_changed)
+        self.chk_show_undercuts.stateChanged.connect(self.on_issue_filter_changed)
+
+        dfm_layout.addWidget(self.chk_show_thickness)
+        dfm_layout.addWidget(self.chk_show_draft)
+        dfm_layout.addWidget(self.chk_show_corners)
+        dfm_layout.addWidget(self.chk_show_undercuts)
+
+        dfm_layout.addSpacing(10)
+
+        # --- SECTION 6: Details Table (compact) ---
         details_label = QLabel("<b>Details</b>")
         dfm_layout.addWidget(details_label)
 
@@ -258,6 +291,18 @@ class MainWindow(QMainWindow):
         if self.last_file_path is None:
             return
         self.load_and_display_stl(self.last_file_path)
+    
+    def on_issue_filter_changed(self, state):
+        """
+        Re-apply coloring with the current issue filters,
+        without re-loading the STL from disk.
+        """
+        if self.last_file_path is None or self.last_dfm_results is None:
+            return
+        # Just re-run load_and_display_stl with the same file;
+        # run_all_checks is cheap enough for now.
+        self.load_and_display_stl(self.last_file_path)
+
 
     # Helper: map UI selection → pull direction vector
     def get_pull_direction_vector(self) -> np.ndarray:
@@ -287,6 +332,7 @@ class MainWindow(QMainWindow):
         local_info = checks.get("local_thickness", {})
         corner_info = checks.get("sharp_corners", {})
         draft_info = checks.get("draft_angle", {})
+        und_info = checks.get("undercuts", {})
 
         g_status = global_info.get("status", "-")
         g_smallest = global_info.get("smallest_dimension", "-")
@@ -300,6 +346,9 @@ class MainWindow(QMainWindow):
 
         d_status = draft_info.get("status", "-")
         d_bad_faces = draft_info.get("num_bad_faces", "-")
+
+        u_status = und_info.get("status", "-")
+        u_num_faces = und_info.get("num_undercut_faces", "-")
 
         # ---- Part Info ----
         if self.last_file_path:
@@ -322,12 +371,14 @@ class MainWindow(QMainWindow):
         self.lbl_local_status.setText(f"Local Thickness: {l_status}")
         self.lbl_corner_status.setText(f"Sharp Corners: {c_status}")
         self.lbl_draft_status.setText(f"Draft Angle: {d_status}")
+        self.lbl_undercut_status.setText(f"Undercuts: {u_status}")
 
         self.lbl_global_value.setText(f"Smallest Dimension: {g_smallest}")
         self.lbl_local_min.setText(f"Min Local Thickness: {l_min}")
         self.lbl_local_thin_count.setText(f"Thin Vertices: {l_count}")
         self.lbl_corner_count.setText(f"Sharp Edges: {c_num}")
         self.lbl_draft_bad_faces.setText(f"Faces below min draft: {d_bad_faces}")
+        self.lbl_undercut_faces.setText(f"Undercut Faces: {u_num_faces}")
 
         # ---- Details Table (compact) ----
         self.dfm_table.setRowCount(0)
@@ -343,6 +394,8 @@ class MainWindow(QMainWindow):
         add_row("Sharp corners – edge count", c_num)
         add_row("Draft – faces below min", d_bad_faces)
         add_row("Pull direction", self.combo_pull.currentText())
+        add_row("Undercuts - Faces count", u_num_faces)
+
 
     # ------------------------------------------------------------------
     # Export DFM report
@@ -393,6 +446,7 @@ class MainWindow(QMainWindow):
         local_info = checks.get("local_thickness", {})
         corner_info = checks.get("sharp_corners", {})
         draft_info = checks.get("draft_angle", {})
+        und_info = checks.get("undercuts", {})
 
         lines = []
         lines.append("SmartDFM – Injection Molding DFM Report")
@@ -464,6 +518,16 @@ class MainWindow(QMainWindow):
         lines.append(f"  Min Draft Angle (deg): {draft_info.get('min_draft_angle', 'N/A')}")
         lines.append(f"  Faces below min draft: {draft_info.get('num_bad_faces', 'N/A')}")
         lines.append(f"  Draft Threshold (deg): {draft_info.get('angle_threshold_deg', 'N/A')}")
+        lines.append("")
+
+        # Undercut check
+        lines.append("Undercut Check")
+        lines.append("-" * 30)
+        lines.append(f"  Status: {und_info.get('status', 'N/A')}")
+        lines.append(f"  Message: {und_info.get('message', '')}")
+        lines.append(f"  Undercut faces: {und_info.get('num_undercut_faces', 'N/A')}")
+        lines.append(f"  Angle Threshold (deg): {und_info.get('angle_threshold_deg', 'N/A')}")
+        lines.append(f"  Max Undercut Angle (deg): {und_info.get('max_undercut_angle_deg', 'N/A')}")
         lines.append("")
 
         # Screenshot info
@@ -543,11 +607,13 @@ class MainWindow(QMainWindow):
             global_chk = checks.get("global_thickness", {})
             corner_chk = checks.get("sharp_corners", {})
             draft_chk = checks.get("draft_angle", {})
+            undercut_chk = checks.get("undercuts", {})
 
             per_vertex_thickness = local_chk.get("per_vertex_thickness", None)
             threshold = local_chk.get("threshold", None)
             corner_mask = corner_chk.get("corner_vertex_mask", None)
             draft_vertex_mask = draft_chk.get("bad_vertex_mask", None)
+            undercut_vertex_mask = undercut_chk.get("bad_vertex_mask", None)
 
             # Center + normalize
             center = vertices.mean(axis=0)
@@ -560,7 +626,7 @@ class MainWindow(QMainWindow):
             # Build per-vertex colors
             vertex_colors = np.zeros((vertices.shape[0], 4), dtype=float)
             vertex_colors[:, :] = [0.7, 0.7, 0.7, 1.0]  # grey default
-
+            # --- Build Boolean masks ---
             thin_mask = np.zeros(vertices.shape[0], dtype=bool)
             if per_vertex_thickness is not None and threshold is not None:
                 t = np.array(per_vertex_thickness, dtype=float)
@@ -575,13 +641,34 @@ class MainWindow(QMainWindow):
             if draft_vertex_mask is not None:
                 draft_bad_mask = np.array(draft_vertex_mask, dtype=bool)
 
+            undercut_bad_mask = np.zeros(vertices.shape[0], dtype=bool)
+            if undercut_vertex_mask is not None:
+                undercut_bad_mask = np.array(undercut_vertex_mask, dtype=bool)
+            if not self.chk_show_thickness.isChecked():
+                thin_mask[:] = False
+            if not self.chk_show_draft.isChecked():
+                draft_bad_mask[:] = False
+            if not self.chk_show_corners.isChecked():
+                corner_vertex_mask[:] = False
+            if not self.chk_show_undercuts.isChecked():
+                undercut_bad_mask[:] = False
+                
+            # --- Assign colors with priority ---
             # PRIORITY: thin (red) > draft (green) > sharp corners (blue)
-            vertex_colors[thin_mask] = [1.0, 0.0, 0.0, 1.0]  # red
-
+            vertex_colors[undercut_bad_mask] = [1.0, 1.0, 0.0, 1.0]  # yellow
+            
+            thin_only = thin_mask & (~undercut_bad_mask)
+            vertex_colors[thin_only] = [1.0, 0.0, 0.0, 1.0]  # red
+            
             draft_only = (~thin_mask) & draft_bad_mask
             vertex_colors[draft_only] = [0.0, 1.0, 0.0, 1.0]  # green
 
-            corner_only = (~thin_mask) & (~draft_bad_mask) & corner_vertex_mask
+            corner_only = (
+                corner_vertex_mask
+                & (~thin_mask)
+                & (~draft_bad_mask)
+                & (~undercut_bad_mask)
+            )
             vertex_colors[corner_only] = [0.0, 0.0, 1.0, 1.0]  # blue
 
             mesh_data = gl.MeshData(

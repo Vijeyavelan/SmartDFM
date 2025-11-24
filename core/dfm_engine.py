@@ -12,7 +12,7 @@ from core.dfm_checks.thickness import (
     LOCAL_MIN_THICKNESS,
 )
 from core.dfm_checks.sharp_corners import check_sharp_corners
-
+from core.dfm_checks.undercut import check_undercuts
 
 def run_all_checks(
     vertices: np.ndarray,
@@ -123,6 +123,17 @@ def run_all_checks(
         pull_direction=pull_direction,  # may be None → defaults to +Z inside the function
     )
     checks["draft_angle"] = draft_result
+    
+    # -----------------------------------------------
+    # Undercuts
+    # -----------------------------------------------
+    undercut_result = check_undercuts(
+        faces=faces,
+        face_normals=face_normals,
+        num_vertices=vertices.shape[0],
+        pull_direction=pull_direction,  # may be None → defaults to +Z inside the function
+    )
+    checks["undercuts"] = undercut_result
 
     # -----------------------------------------------
     # Summary
