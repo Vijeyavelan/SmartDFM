@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
     QApplication,
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QMenuBar,
     QFileDialog, QMessageBox, QTableWidget, QTableWidgetItem,
-    QLabel, QHeaderView, QPushButton, QDoubleSpinBox
+    QLabel, QHeaderView, QPushButton, QDoubleSpinBox, QComboBox
 )
 from PySide6.QtGui import QAction
 
@@ -83,11 +83,28 @@ class MainWindow(QMainWindow):
         self.dfm_panel = QWidget()
         dfm_layout = QVBoxLayout(self.dfm_panel)
 
+        # --- SECTION 0: Title ---
         self.lbl_title = QLabel("<b>Injection Molding DFM Summary</b>")
         dfm_layout.addWidget(self.lbl_title)
 
-        # Threshold controls
-        self.lbl_thresholds = QLabel("<b>Thickness Thresholds (model units)</b>")
+        dfm_layout.addSpacing(6)
+
+        # --- SECTION 1: Part Info ---
+        self.lbl_part_header = QLabel("<b>Part Info</b>")
+        dfm_layout.addWidget(self.lbl_part_header)
+
+        self.lbl_part_name = QLabel("File: -")
+        self.lbl_part_tris = QLabel("Triangles: -")
+        self.lbl_part_size = QLabel("Size (X×Y×Z): -")
+
+        dfm_layout.addWidget(self.lbl_part_name)
+        dfm_layout.addWidget(self.lbl_part_tris)
+        dfm_layout.addWidget(self.lbl_part_size)
+
+        dfm_layout.addSpacing(10)
+
+        # --- SECTION 2: Process Settings (thickness + pull direction) ---
+        self.lbl_thresholds = QLabel("<b>Process Settings</b>")
         dfm_layout.addWidget(self.lbl_thresholds)
 
         # Global thickness threshold spin box
@@ -114,38 +131,85 @@ class MainWindow(QMainWindow):
         local_row.addWidget(self.spin_local)
         dfm_layout.addLayout(local_row)
 
+        # Pull direction selector
+        pull_row = QHBoxLayout()
+        pull_row.addWidget(QLabel("Pull direction:"))
+        self.combo_pull = QComboBox()
+        self.combo_pull.addItems(["+Z", "-Z", "+X", "-X", "+Y", "-Y"])
+        self.combo_pull.setCurrentText("+Z")
+        self.combo_pull.currentIndexChanged.connect(self.on_threshold_changed)
+        pull_row.addWidget(self.combo_pull)
+        dfm_layout.addLayout(pull_row)
+
         dfm_layout.addSpacing(10)
 
-        # Global thickness labels
-        self.lbl_global_status = QLabel("Global Thickness: -")
-        self.lbl_global_value = QLabel("Smallest Dimension: -")
-        dfm_layout.addWidget(self.lbl_global_status)
-        dfm_layout.addWidget(self.lbl_global_value)
+        # --- SECTION 3: DFM Overview (traffic-light style) ---
+        self.lbl_overview = QLabel("<b>DFM Overview</b>")
+        dfm_layout.addWidget(self.lbl_overview)
 
-        # Local thickness labels
+        self.lbl_global_status = QLabel("Global Thickness: -")
         self.lbl_local_status = QLabel("Local Thickness: -")
+        self.lbl_corner_status = QLabel("Sharp Corners: -")
+        self.lbl_draft_status = QLabel("Draft Angle: -")
+
+        dfm_layout.addWidget(self.lbl_global_status)
+        dfm_layout.addWidget(self.lbl_local_status)
+        dfm_layout.addWidget(self.lbl_corner_status)
+        dfm_layout.addWidget(self.lbl_draft_status)
+
+        dfm_layout.addSpacing(8)
+
+        # Detailed summary for thickness / draft
+        self.lbl_global_value = QLabel("Smallest Dimension: -")
         self.lbl_local_min = QLabel("Min Local Thickness: -")
         self.lbl_local_thin_count = QLabel("Thin Vertices: -")
-        dfm_layout.addWidget(self.lbl_local_status)
+        self.lbl_corner_count = QLabel("Sharp Edges: -")
+        self.lbl_draft_bad_faces = QLabel("Faces below min draft: -")
+
+        dfm_layout.addWidget(self.lbl_global_value)
         dfm_layout.addWidget(self.lbl_local_min)
         dfm_layout.addWidget(self.lbl_local_thin_count)
-
-        # Sharp corners labels
-        self.lbl_corner_status = QLabel("Sharp Corners: -")
-        self.lbl_corner_count = QLabel("Sharp Edges: -")
-        dfm_layout.addWidget(self.lbl_corner_status)
         dfm_layout.addWidget(self.lbl_corner_count)
-
-        # Draft angle labels
-        self.lbl_draft_status = QLabel("Draft Angle: -")
-        self.lbl_draft_bad_faces = QLabel("Faces below min draft: -")
-        dfm_layout.addWidget(self.lbl_draft_status)
         dfm_layout.addWidget(self.lbl_draft_bad_faces)
 
-        # DFM results table
+        dfm_layout.addSpacing(10)
+
+        # --- SECTION 4: Color Legend ---
+        self.lbl_legend_header = QLabel("<b>Color Legend</b>")
+        dfm_layout.addWidget(self.lbl_legend_header)
+
+        def make_color_row(color_css: str, text: str):
+            row = QHBoxLayout()
+            swatch = QLabel()
+            swatch.setStyleSheet(
+                f"background-color: {color_css}; border: 1px solid #333;"
+            )
+            swatch.setFixedSize(16, 16)  # fixed square, won't resize
+            row.addWidget(swatch)
+            row.addSpacing(6)
+            row.addWidget(QLabel(text))
+            row.addStretch()
+            return row
+
+        dfm_layout.addLayout(
+            make_color_row("red", "Thin regions (local thickness below threshold)")
+        )
+        dfm_layout.addLayout(
+            make_color_row("lime", "Faces with insufficient draft")
+        )
+        dfm_layout.addLayout(
+            make_color_row("blue", "Sharp internal corners / edges")
+        )
+
+        dfm_layout.addSpacing(10)
+
+        # --- SECTION 5: Details Table (compact) ---
+        details_label = QLabel("<b>Details</b>")
+        dfm_layout.addWidget(details_label)
+
         self.dfm_table = QTableWidget()
         self.dfm_table.setColumnCount(2)
-        self.dfm_table.setHorizontalHeaderLabels(["Check", "Result"])
+        self.dfm_table.setHorizontalHeaderLabels(["Check", "Key Value"])
         self.dfm_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         dfm_layout.addWidget(self.dfm_table)
 
@@ -188,18 +252,36 @@ class MainWindow(QMainWindow):
         self.load_and_display_stl(file_path)
 
     # ------------------------------------------------------------------
-    # Threshold changes
+    # Threshold / pull-direction changes
     # ------------------------------------------------------------------
     def on_threshold_changed(self, value):
         if self.last_file_path is None:
             return
         self.load_and_display_stl(self.last_file_path)
 
+    # Helper: map UI selection → pull direction vector
+    def get_pull_direction_vector(self) -> np.ndarray:
+        text = self.combo_pull.currentText()
+        if text == "+X":
+            return np.array([1.0, 0.0, 0.0], dtype=float)
+        elif text == "-X":
+            return np.array([-1.0, 0.0, 0.0], dtype=float)
+        elif text == "+Y":
+            return np.array([0.0, 1.0, 0.0], dtype=float)
+        elif text == "-Y":
+            return np.array([0.0, -1.0, 0.0], dtype=float)
+        elif text == "-Z":
+            return np.array([0.0, 0.0, -1.0], dtype=float)
+        # default
+        return np.array([0.0, 0.0, 1.0], dtype=float)
+
     # ------------------------------------------------------------------
     # DFM panel update
     # ------------------------------------------------------------------
     def update_dfm_panel(self, dfm_results: dict):
         checks = dfm_results.get("checks", {})
+        bbox = dfm_results.get("bbox", {})
+        tri_count = dfm_results.get("triangles", "-")
 
         global_info = checks.get("global_thickness", {})
         local_info = checks.get("local_thickness", {})
@@ -219,21 +301,35 @@ class MainWindow(QMainWindow):
         d_status = draft_info.get("status", "-")
         d_bad_faces = draft_info.get("num_bad_faces", "-")
 
-        # Labels
-        self.lbl_global_status.setText(f"Global Thickness: {g_status}")
-        self.lbl_global_value.setText(f"Smallest Dimension: {g_smallest}")
+        # ---- Part Info ----
+        if self.last_file_path:
+            self.lbl_part_name.setText(f"File: {os.path.basename(self.last_file_path)}")
+        else:
+            self.lbl_part_name.setText("File: -")
 
+        self.lbl_part_tris.setText(f"Triangles: {tri_count}")
+
+        ext = bbox.get("extents")
+        if ext is not None and hasattr(ext, "__len__") and len(ext) == 3:
+            self.lbl_part_size.setText(
+                f"Size (X×Y×Z): {ext[0]:.2f} × {ext[1]:.2f} × {ext[2]:.2f}"
+            )
+        else:
+            self.lbl_part_size.setText("Size (X×Y×Z): -")
+
+        # ---- Overview Labels ----
+        self.lbl_global_status.setText(f"Global Thickness: {g_status}")
         self.lbl_local_status.setText(f"Local Thickness: {l_status}")
+        self.lbl_corner_status.setText(f"Sharp Corners: {c_status}")
+        self.lbl_draft_status.setText(f"Draft Angle: {d_status}")
+
+        self.lbl_global_value.setText(f"Smallest Dimension: {g_smallest}")
         self.lbl_local_min.setText(f"Min Local Thickness: {l_min}")
         self.lbl_local_thin_count.setText(f"Thin Vertices: {l_count}")
-
-        self.lbl_corner_status.setText(f"Sharp Corners: {c_status}")
         self.lbl_corner_count.setText(f"Sharp Edges: {c_num}")
-
-        self.lbl_draft_status.setText(f"Draft Angle: {d_status}")
         self.lbl_draft_bad_faces.setText(f"Faces below min draft: {d_bad_faces}")
 
-        # Fill DFM table
+        # ---- Details Table (compact) ----
         self.dfm_table.setRowCount(0)
 
         def add_row(name, value):
@@ -242,15 +338,11 @@ class MainWindow(QMainWindow):
             self.dfm_table.setItem(row, 0, QTableWidgetItem(str(name)))
             self.dfm_table.setItem(row, 1, QTableWidgetItem(str(value)))
 
-        add_row("Global Status", g_status)
-        add_row("Smallest Dimension", g_smallest)
-        add_row("Local Status", l_status)
-        add_row("Min Local Thickness", l_min)
-        add_row("Thin Vertices", l_count)
-        add_row("Sharp Corners Status", c_status)
-        add_row("Sharp Edges Count", c_num)
-        add_row("Draft Status", d_status)
-        add_row("Faces below min draft", d_bad_faces)
+        add_row("Global thickness – smallest dim", g_smallest)
+        add_row("Local thickness – min local", l_min)
+        add_row("Sharp corners – edge count", c_num)
+        add_row("Draft – faces below min", d_bad_faces)
+        add_row("Pull direction", self.combo_pull.currentText())
 
     # ------------------------------------------------------------------
     # Export DFM report
@@ -318,6 +410,12 @@ class MainWindow(QMainWindow):
         lines.append(f"  Local wall thickness: {self.spin_local.value()}")
         lines.append("")
 
+        # Pull direction
+        lines.append("Draft / Pull Direction")
+        lines.append("-" * 30)
+        lines.append(f"  Pull direction: {self.combo_pull.currentText()}")
+        lines.append("")
+
         # Bounding box
         min_b = bbox.get("min")
         max_b = bbox.get("max")
@@ -359,7 +457,7 @@ class MainWindow(QMainWindow):
         lines.append("")
 
         # Draft angle
-        lines.append("Draft Angle Check (+Z pull direction)")
+        lines.append("Draft Angle Check")
         lines.append("-" * 30)
         lines.append(f"  Status: {draft_info.get('status', 'N/A')}")
         lines.append(f"  Message: {draft_info.get('message', '')}")
@@ -421,6 +519,7 @@ class MainWindow(QMainWindow):
             # Read thresholds from UI
             min_global = self.spin_global.value()
             min_local = self.spin_local.value()
+            pull_dir = self.get_pull_direction_vector()
 
             # Run DFM pipeline
             dfm_results = run_all_checks(
@@ -428,6 +527,7 @@ class MainWindow(QMainWindow):
                 faces,
                 min_global_thickness=min_global,
                 min_local_thickness=min_local,
+                pull_direction=pull_dir,
             )
             dfm_summary = dfm_results.get("summary", "DFM: no summary")
             checks = dfm_results.get("checks", {})

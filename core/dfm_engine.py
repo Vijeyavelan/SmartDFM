@@ -1,8 +1,9 @@
 # core/dfm_engine.py
 
 import numpy as np
-from core.dfm_checks.draft import check_draft_angle
+from typing import Optional
 
+from core.dfm_checks.draft import check_draft_angle
 from core.dfm_checks.thickness import (
     compute_face_normals,
     compute_vertex_normals,
@@ -18,9 +19,20 @@ def run_all_checks(
     faces: np.ndarray,
     min_global_thickness: float = MIN_GLOBAL_THICKNESS,
     min_local_thickness: float = LOCAL_MIN_THICKNESS,
+    pull_direction: Optional[np.ndarray] = None,
 ) -> dict:
     """
     Main DFM pipeline for SmartDFM (Injection Molding MVP).
+
+    Parameters
+    ----------
+    vertices : (N, 3) float array
+    faces    : (M, 3) int array
+    min_global_thickness : float
+    min_local_thickness  : float
+    pull_direction       : (3,) float array or None
+        Draft / ejection direction in model coordinates.
+        If None, the draft check will default to +Z inside check_draft_angle().
     """
 
     results: dict = {}
@@ -102,12 +114,13 @@ def run_all_checks(
     checks["sharp_corners"] = corner_result
 
     # -----------------------------------------------
-    # Draft angle (+Z direction)
+    # Draft angle (using selected pull_direction)
     # -----------------------------------------------
     draft_result = check_draft_angle(
         faces=faces,
         face_normals=face_normals,
         num_vertices=vertices.shape[0],
+        pull_direction=pull_direction,  # may be None → defaults to +Z inside the function
     )
     checks["draft_angle"] = draft_result
 
@@ -116,7 +129,7 @@ def run_all_checks(
     # -----------------------------------------------
     l_status = local_result.get("status", "UNKNOWN")
     c_status = corner_result.get("status", "UNKNOWN")
-    d_status = draft_result.get("status", "UNKNOWN")     # <-- FIXED
+    d_status = draft_result.get("status", "UNKNOWN")
 
     results["summary"] = (
         f"DFM – Global thickness: {g_status}. "
