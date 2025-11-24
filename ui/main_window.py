@@ -136,6 +136,12 @@ class MainWindow(QMainWindow):
         dfm_layout.addWidget(self.lbl_corner_status)
         dfm_layout.addWidget(self.lbl_corner_count)
 
+        # Draft angle labels
+        self.lbl_draft_status = QLabel("Draft Angle: -")
+        self.lbl_draft_bad_faces = QLabel("Faces below min draft: -")
+        dfm_layout.addWidget(self.lbl_draft_status)
+        dfm_layout.addWidget(self.lbl_draft_bad_faces)
+
         # DFM results table
         self.dfm_table = QTableWidget()
         self.dfm_table.setColumnCount(2)
@@ -198,6 +204,7 @@ class MainWindow(QMainWindow):
         global_info = checks.get("global_thickness", {})
         local_info = checks.get("local_thickness", {})
         corner_info = checks.get("sharp_corners", {})
+        draft_info = checks.get("draft_angle", {})
 
         g_status = global_info.get("status", "-")
         g_smallest = global_info.get("smallest_dimension", "-")
@@ -208,6 +215,9 @@ class MainWindow(QMainWindow):
 
         c_status = corner_info.get("status", "-")
         c_num = corner_info.get("num_sharp_edges", "-")
+
+        d_status = draft_info.get("status", "-")
+        d_bad_faces = draft_info.get("num_bad_faces", "-")
 
         # Labels
         self.lbl_global_status.setText(f"Global Thickness: {g_status}")
@@ -220,7 +230,10 @@ class MainWindow(QMainWindow):
         self.lbl_corner_status.setText(f"Sharp Corners: {c_status}")
         self.lbl_corner_count.setText(f"Sharp Edges: {c_num}")
 
-        # Table
+        self.lbl_draft_status.setText(f"Draft Angle: {d_status}")
+        self.lbl_draft_bad_faces.setText(f"Faces below min draft: {d_bad_faces}")
+
+        # Fill DFM table
         self.dfm_table.setRowCount(0)
 
         def add_row(name, value):
@@ -236,6 +249,8 @@ class MainWindow(QMainWindow):
         add_row("Thin Vertices", l_count)
         add_row("Sharp Corners Status", c_status)
         add_row("Sharp Edges Count", c_num)
+        add_row("Draft Status", d_status)
+        add_row("Faces below min draft", d_bad_faces)
 
     # ------------------------------------------------------------------
     # Export DFM report
@@ -285,6 +300,7 @@ class MainWindow(QMainWindow):
         global_info = checks.get("global_thickness", {})
         local_info = checks.get("local_thickness", {})
         corner_info = checks.get("sharp_corners", {})
+        draft_info = checks.get("draft_angle", {})
 
         lines = []
         lines.append("SmartDFM – Injection Molding DFM Report")
@@ -342,6 +358,16 @@ class MainWindow(QMainWindow):
         lines.append(f"  Max Sharp Angle (deg): {corner_info.get('max_sharp_angle_deg', 'N/A')}")
         lines.append("")
 
+        # Draft angle
+        lines.append("Draft Angle Check (+Z pull direction)")
+        lines.append("-" * 30)
+        lines.append(f"  Status: {draft_info.get('status', 'N/A')}")
+        lines.append(f"  Message: {draft_info.get('message', '')}")
+        lines.append(f"  Min Draft Angle (deg): {draft_info.get('min_draft_angle', 'N/A')}")
+        lines.append(f"  Faces below min draft: {draft_info.get('num_bad_faces', 'N/A')}")
+        lines.append(f"  Draft Threshold (deg): {draft_info.get('angle_threshold_deg', 'N/A')}")
+        lines.append("")
+
         # Screenshot info
         lines.append("Screenshot")
         lines.append("-" * 30)
@@ -379,6 +405,7 @@ class MainWindow(QMainWindow):
         Load STL, run DFM checks, and display mesh.
         Thin regions (by local wall thickness) are colored red.
         Sharp corners are colored blue.
+        Bad draft angle (insufficient draft) are colored green.
         """
         try:
             vertices, faces = load_stl(file_path)
@@ -415,10 +442,12 @@ class MainWindow(QMainWindow):
             local_chk = checks.get("local_thickness", {})
             global_chk = checks.get("global_thickness", {})
             corner_chk = checks.get("sharp_corners", {})
+            draft_chk = checks.get("draft_angle", {})
 
             per_vertex_thickness = local_chk.get("per_vertex_thickness", None)
             threshold = local_chk.get("threshold", None)
             corner_mask = corner_chk.get("corner_vertex_mask", None)
+            draft_vertex_mask = draft_chk.get("bad_vertex_mask", None)
 
             # Center + normalize
             center = vertices.mean(axis=0)
@@ -442,10 +471,18 @@ class MainWindow(QMainWindow):
             if corner_mask is not None:
                 corner_vertex_mask = np.array(corner_mask, dtype=bool)
 
-            # Priority: thin (red) > sharp corner (blue) > grey
+            draft_bad_mask = np.zeros(vertices.shape[0], dtype=bool)
+            if draft_vertex_mask is not None:
+                draft_bad_mask = np.array(draft_vertex_mask, dtype=bool)
+
+            # PRIORITY: thin (red) > draft (green) > sharp corners (blue)
             vertex_colors[thin_mask] = [1.0, 0.0, 0.0, 1.0]  # red
-            corner_only_mask = ~thin_mask & corner_vertex_mask
-            vertex_colors[corner_only_mask] = [0.0, 0.0, 1.0, 1.0]  # blue
+
+            draft_only = (~thin_mask) & draft_bad_mask
+            vertex_colors[draft_only] = [0.0, 1.0, 0.0, 1.0]  # green
+
+            corner_only = (~thin_mask) & (~draft_bad_mask) & corner_vertex_mask
+            vertex_colors[corner_only] = [0.0, 0.0, 1.0, 1.0]  # blue
 
             mesh_data = gl.MeshData(
                 vertexes=vertices_centered,
@@ -485,6 +522,13 @@ class MainWindow(QMainWindow):
                     self,
                     "DFM Warning – Sharp Corners",
                     corner_chk.get("message", "Sharp corners detected."),
+                )
+
+            if draft_chk and draft_chk.get("status") == "WARNING":
+                QMessageBox.warning(
+                    self,
+                    "DFM Warning – Draft Angle",
+                    draft_chk.get("message", "Insufficient draft detected."),
                 )
 
             # Status bar

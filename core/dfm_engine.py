@@ -1,6 +1,7 @@
 # core/dfm_engine.py
 
 import numpy as np
+from core.dfm_checks.draft import check_draft_angle
 
 from core.dfm_checks.thickness import (
     compute_face_normals,
@@ -9,9 +10,7 @@ from core.dfm_checks.thickness import (
     MIN_GLOBAL_THICKNESS,
     LOCAL_MIN_THICKNESS,
 )
-from core.dfm_checks.sharp_corners import (
-    check_sharp_corners,
-)
+from core.dfm_checks.sharp_corners import check_sharp_corners
 
 
 def run_all_checks(
@@ -22,16 +21,13 @@ def run_all_checks(
 ) -> dict:
     """
     Main DFM pipeline for SmartDFM (Injection Molding MVP).
-
-    - Computes basic geometry (bbox, triangle count)
-    - Runs global thickness check
-    - Runs local wall thickness check
-    - Runs sharp corner check
-    - Returns a single results dict consumed by the UI
     """
+
     results: dict = {}
 
-    # ---- Geometry ----
+    # -----------------------------------------------
+    # Geometry
+    # -----------------------------------------------
     tri_count = faces.shape[0]
     min_bounds = vertices.min(axis=0)
     max_bounds = vertices.max(axis=0)
@@ -44,7 +40,9 @@ def run_all_checks(
         "extents": extents,
     }
 
-    # ---- Normals ----
+    # -----------------------------------------------
+    # Normals
+    # -----------------------------------------------
     face_normals, face_areas = compute_face_normals(vertices, faces)
     vertex_normals = compute_vertex_normals(vertices, faces, face_normals, face_areas)
 
@@ -56,8 +54,11 @@ def run_all_checks(
     checks: dict = {}
     results["checks"] = checks
 
-    # ---- Global thickness check ----
+    # -----------------------------------------------
+    # Global thickness
+    # -----------------------------------------------
     smallest_dim = float(extents.min())
+
     if smallest_dim < min_global_thickness:
         g_status = "WARNING"
         g_msg = (
@@ -78,7 +79,9 @@ def run_all_checks(
         "min_allowed": min_global_thickness,
     }
 
-    # ---- Local wall thickness check ----
+    # -----------------------------------------------
+    # Local thickness
+    # -----------------------------------------------
     local_result = check_local_wall_thickness(
         vertices,
         faces,
@@ -88,7 +91,9 @@ def run_all_checks(
     )
     checks["local_thickness"] = local_result
 
-    # ---- Sharp corner check ----
+    # -----------------------------------------------
+    # Sharp corners
+    # -----------------------------------------------
     corner_result = check_sharp_corners(
         faces=faces,
         face_normals=face_normals,
@@ -96,14 +101,28 @@ def run_all_checks(
     )
     checks["sharp_corners"] = corner_result
 
-    # ---- Summary ----
+    # -----------------------------------------------
+    # Draft angle (+Z direction)
+    # -----------------------------------------------
+    draft_result = check_draft_angle(
+        faces=faces,
+        face_normals=face_normals,
+        num_vertices=vertices.shape[0],
+    )
+    checks["draft_angle"] = draft_result
+
+    # -----------------------------------------------
+    # Summary
+    # -----------------------------------------------
     l_status = local_result.get("status", "UNKNOWN")
     c_status = corner_result.get("status", "UNKNOWN")
+    d_status = draft_result.get("status", "UNKNOWN")     # <-- FIXED
 
     results["summary"] = (
         f"DFM – Global thickness: {g_status}. "
         f"Local thickness: {l_status}. "
-        f"Sharp corners: {c_status}."
+        f"Sharp corners: {c_status}. "
+        f"Draft angle: {d_status}."
     )
 
     return results
