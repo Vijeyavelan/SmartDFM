@@ -1,5 +1,6 @@
 # ui/main_window.py
 
+from email.mime import message
 import sys
 import os
 import numpy as np
@@ -215,13 +216,13 @@ class MainWindow(QMainWindow):
         dfm_layout.addWidget(self.lbl_filters_header)
 
         self.chk_show_thickness = QCheckBox("Thin regions")
-        self.chk_show_thickness.setChecked(True)
+        self.chk_show_thickness.setChecked(False)
         self.chk_show_draft = QCheckBox("Draft issues")
-        self.chk_show_draft.setChecked(True)
+        self.chk_show_draft.setChecked(False)
         self.chk_show_corners = QCheckBox("Sharp corners")
-        self.chk_show_corners.setChecked(True)
+        self.chk_show_corners.setChecked(False)
         self.chk_show_undercuts = QCheckBox("Undercuts")
-        self.chk_show_undercuts.setChecked(True)
+        self.chk_show_undercuts.setChecked(False)
 
         # When any checkbox changes, just re-run coloring on the current part
         self.chk_show_thickness.stateChanged.connect(self.on_issue_filter_changed)
@@ -282,7 +283,18 @@ class MainWindow(QMainWindow):
         )
         if not file_path:
             return
-        self.load_and_display_stl(file_path)
+        # Reset all issue filters when a new file is opened
+        self.chk_show_thickness.setChecked(False)
+        self.chk_show_draft.setChecked(False)
+        self.chk_show_corners.setChecked(False)
+        self.chk_show_undercuts.setChecked(False)
+
+        # Load STL with no warnings and no colors
+        self.load_and_display_stl(
+            file_path,
+            active_check=None,
+            show_all_warnings=False,
+        )
 
     # ------------------------------------------------------------------
     # Threshold / pull-direction changes
@@ -294,15 +306,51 @@ class MainWindow(QMainWindow):
     
     def on_issue_filter_changed(self, state):
         """
-        Re-apply coloring with the current issue filters,
-        without re-loading the STL from disk.
+        Handles toggling of visibility checkboxes.
+        OFF → ON: show popup for this check ONLY
+        ON → OFF: no popup
         """
         if self.last_file_path is None or self.last_dfm_results is None:
             return
-        # Just re-run load_and_display_stl with the same file;
-        # run_all_checks is cheap enough for now.
-        self.load_and_display_stl(self.last_file_path)
 
+        sender = self.sender()
+
+        # Detect which checkbox was toggled
+        if sender is self.chk_show_thickness:
+            check_key = "local_thickness"
+            now_enabled = self.chk_show_thickness.isChecked()
+
+        elif sender is self.chk_show_draft:
+            check_key = "draft_angle"
+            now_enabled = self.chk_show_draft.isChecked()
+
+        elif sender is self.chk_show_corners:
+            check_key = "sharp_corners"
+            now_enabled = self.chk_show_corners.isChecked()
+
+        elif sender is self.chk_show_undercuts:
+            check_key = "undercuts"
+            now_enabled = self.chk_show_undercuts.isChecked()
+
+        else:
+            return
+
+        # OFF → ON → show popup for this check only
+        # OFF → ON → show popup
+        # ON → OFF → no popup
+        if now_enabled:
+            self.load_and_display_stl(
+                self.last_file_path,
+                active_check=check_key,
+                show_all_warnings=False,
+            )
+        else:
+            # Recolor and refresh WITHOUT any popup
+            self.load_and_display_stl(
+                self.last_file_path,
+                active_check=None,
+                show_all_warnings=False,
+    )
 
     # Helper: map UI selection → pull direction vector
     def get_pull_direction_vector(self) -> np.ndarray:
@@ -562,7 +610,12 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     # Load, DFM, and display
     # ------------------------------------------------------------------
-    def load_and_display_stl(self, file_path: str):
+    def load_and_display_stl(
+            self, 
+            file_path: str,
+            active_check: str | None = None,    
+            show_all_warnings: bool = False,
+        ):
         """
         Load STL, run DFM checks, and display mesh.
         Thin regions (by local wall thickness) are colored red.
@@ -595,6 +648,13 @@ class MainWindow(QMainWindow):
             )
             dfm_summary = dfm_results.get("summary", "DFM: no summary")
             checks = dfm_results.get("checks", {})
+            def _maybe_warn(check_key: str, title: str, message: str):
+            # If this is a checkbox-triggered refresh,
+            # show popup ONLY for the check that was toggled.
+                if not show_all_warnings:
+                    if active_check != check_key:
+                        return
+                QMessageBox.warning(self, title, message)
 
             # Store for export / rerun
             self.last_dfm_results = dfm_results
@@ -652,7 +712,7 @@ class MainWindow(QMainWindow):
                 corner_vertex_mask[:] = False
             if not self.chk_show_undercuts.isChecked():
                 undercut_bad_mask[:] = False
-                
+
             # --- Assign colors with priority ---
             # PRIORITY: thin (red) > draft (green) > sharp corners (blue)
             vertex_colors[undercut_bad_mask] = [1.0, 1.0, 0.0, 1.0]  # yellow
@@ -689,33 +749,54 @@ class MainWindow(QMainWindow):
             )
             self.view.addItem(self.mesh_item)
 
+            def _maybe_warn(check_key: str, title: str, message: str):
+                # If popups suppressed entirely (file open or uncheck):
+                if active_check is None:
+                    return
+                if active_check != check_key:
+                    return
+                QMessageBox.warning(self, title, message)
+
             # Warnings
+            # Global thickness
+            # GLOBAL thickness
             if global_chk and global_chk.get("status") == "WARNING":
-                QMessageBox.warning(
-                    self,
+                _maybe_warn(
+                    "global_thickness",
                     "DFM Warning – Global Thickness",
-                    global_chk.get("message", "Global thickness issue detected."),
+                    global_chk.get("message", "")
                 )
 
+            # LOCAL thickness
             if local_chk and local_chk.get("status") == "WARNING":
-                QMessageBox.warning(
-                    self,
+                _maybe_warn(
+                    "local_thickness",
                     "DFM Warning – Local Wall Thickness",
-                    local_chk.get("message", "Local wall thickness issue detected."),
+                    local_chk.get("message", "")
                 )
 
+            # SHARP corners
             if corner_chk and corner_chk.get("status") == "WARNING":
-                QMessageBox.warning(
-                    self,
+                _maybe_warn(
+                    "sharp_corners",
                     "DFM Warning – Sharp Corners",
-                    corner_chk.get("message", "Sharp corners detected."),
+                    corner_chk.get("message", "")
                 )
 
+            # DRAFT angle
             if draft_chk and draft_chk.get("status") == "WARNING":
-                QMessageBox.warning(
-                    self,
+                _maybe_warn(
+                    "draft_angle",
                     "DFM Warning – Draft Angle",
-                    draft_chk.get("message", "Insufficient draft detected."),
+                    draft_chk.get("message", "")
+                )
+
+            # UNDERCUTS
+            if undercut_chk and undercut_chk.get("status") == "WARNING":
+                _maybe_warn(
+                    "undercuts",
+                    "DFM Warning – Undercuts",
+                    undercut_chk.get("message", "")
                 )
 
             # Status bar
@@ -728,6 +809,7 @@ class MainWindow(QMainWindow):
                     f"{dfm_summary}"
                 )
                 self.status.showMessage(msg)
+        
 
         except Exception as e:
             QMessageBox.critical(
@@ -738,7 +820,9 @@ class MainWindow(QMainWindow):
             if hasattr(self, "status"):
                 self.status.showMessage(f"Error loading STL: {e}")
 
+   
 
+    
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
