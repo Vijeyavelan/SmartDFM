@@ -28,7 +28,7 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("SmartDFM - STL Viewer (Injection Molding DFM)")
-        self.resize(1200, 800)
+        self.resize(1200, 400)
 
         # ---- Status bar ----
         self.status = self.statusBar()
