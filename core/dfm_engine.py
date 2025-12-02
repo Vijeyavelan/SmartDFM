@@ -13,6 +13,7 @@ from core.dfm_checks.thickness import (
 )
 from core.dfm_checks.sharp_corners import check_sharp_corners
 from core.dfm_checks.undercut import check_undercuts
+from core.dfm_checks.rib_boss import check_rib_boss_thickness
 
 def run_all_checks(
     vertices: np.ndarray,
@@ -104,6 +105,29 @@ def run_all_checks(
     checks["local_thickness"] = local_result
 
     # -----------------------------------------------
+    # Rib / Boss thickness check (over-thick regions)
+    # -----------------------------------------------
+    per_vertex_thickness = local_result.get("per_vertex_thickness", None)
+    if per_vertex_thickness is not None:
+        rib_boss_result = check_rib_boss_thickness(
+            per_vertex_thickness=per_vertex_thickness,
+            base_wall_thickness=None,  # let the function estimate it
+        )
+    else:
+        rib_boss_result = {
+            "status": "UNKNOWN",
+            "message": "No local thickness data available for rib/boss check.",
+            "base_wall_thickness": None,
+            "max_thickness": None,
+            "factor": None,
+            "threshold": None,
+            "num_over_thick_vertices": 0,
+            "bad_vertex_mask": None,
+        }
+
+    checks["rib_boss"] = rib_boss_result
+
+    # -----------------------------------------------
     # Sharp corners
     # -----------------------------------------------
     corner_result = check_sharp_corners(
@@ -141,12 +165,16 @@ def run_all_checks(
     l_status = local_result.get("status", "UNKNOWN")
     c_status = corner_result.get("status", "UNKNOWN")
     d_status = draft_result.get("status", "UNKNOWN")
+    u_status = undercut_result.get("status", "UNKNOWN")
+    rb_status = rib_boss_result.get("status", "UNKNOWN")
 
     results["summary"] = (
         f"DFM – Global thickness: {g_status}. "
         f"Local thickness: {l_status}. "
         f"Sharp corners: {c_status}. "
         f"Draft angle: {d_status}."
+        f" Undercuts: {u_status}."
+        f"Rib/Boss thickness: {rb_status}."
     )
 
     return results

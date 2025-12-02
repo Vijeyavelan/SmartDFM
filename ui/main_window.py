@@ -381,6 +381,7 @@ class MainWindow(QMainWindow):
         corner_info = checks.get("sharp_corners", {})
         draft_info = checks.get("draft_angle", {})
         und_info = checks.get("undercuts", {})
+        rib_boss_info = checks.get("rib_boss", {})
 
         g_status = global_info.get("status", "-")
         g_smallest = global_info.get("smallest_dimension", "-")
@@ -398,7 +399,10 @@ class MainWindow(QMainWindow):
         u_status = und_info.get("status", "-")
         u_num_faces = und_info.get("num_undercut_faces", "-")
 
-        # ---- Part Info ----
+        rb_status = rib_boss_info.get("status", "-")
+        rb_num = rib_boss_info.get("num_over_thick_vertices", "-")
+        rb_factor = rib_boss_info.get("factor", "-")
+        # ---- Part Info Labels ----
         if self.last_file_path:
             self.lbl_part_name.setText(f"File: {os.path.basename(self.last_file_path)}")
         else:
@@ -443,6 +447,8 @@ class MainWindow(QMainWindow):
         add_row("Draft – faces below min", d_bad_faces)
         add_row("Pull direction", self.combo_pull.currentText())
         add_row("Undercuts - Faces count", u_num_faces)
+        add_row("Rib/Boss - Over-thick vertices", rb_num)
+        add_row("Rib/Boss - Factor", rb_factor)
 
 
     # ------------------------------------------------------------------
@@ -495,6 +501,7 @@ class MainWindow(QMainWindow):
         corner_info = checks.get("sharp_corners", {})
         draft_info = checks.get("draft_angle", {})
         und_info = checks.get("undercuts", {})
+        rib_boss_info = checks.get("rib_boss", {})  
 
         lines = []
         lines.append("SmartDFM – Injection Molding DFM Report")
@@ -578,6 +585,18 @@ class MainWindow(QMainWindow):
         lines.append(f"  Max Undercut Angle (deg): {und_info.get('max_undercut_angle_deg', 'N/A')}")
         lines.append("")
 
+        # Rib / Boss thickness check
+        lines.append("Rib/Boss Thickness Check")
+        lines.append("-" * 30)
+        lines.append(f"  Status: {rib_boss_info.get('status', 'N/A')}")
+        lines.append(f"  Message: {rib_boss_info.get('message', '')}")
+        lines.append(f"  Nominal wall thickness: {rib_boss_info.get('base_wall_thickness', 'N/A')}")
+        lines.append(f"  Max thickness: {rib_boss_info.get('max_thickness', 'N/A')}")
+        lines.append(f"  Factor (× wall): {rib_boss_info.get('factor', 'N/A')}")
+        lines.append(f"  Threshold thickness: {rib_boss_info.get('threshold', 'N/A')}")
+        lines.append(f"  Over-thick vertices: {rib_boss_info.get('num_over_thick_vertices', 'N/A')}")
+        lines.append("")
+        
         # Screenshot info
         lines.append("Screenshot")
         lines.append("-" * 30)
