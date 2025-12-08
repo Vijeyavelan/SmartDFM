@@ -81,8 +81,20 @@ class MainWindow(QMainWindow):
         self.mesh_item = None
 
         # ---- Right-side DFM panel ----
+        # ---- Right-side DFM panel inside scroll area ----
+        from PySide6.QtWidgets import QScrollArea
+
         self.dfm_panel = QWidget()
         dfm_layout = QVBoxLayout(self.dfm_panel)
+
+        # Scroll wrapper so panel never gets cut off
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self.dfm_panel)
+        scroll.setMinimumWidth(320)
+        scroll.setMaximumWidth(420)
+
+        content_layout.addWidget(scroll, stretch=0)
 
         # --- SECTION 0: Title ---
         self.lbl_title = QLabel("<b>Injection Molding DFM Summary</b>")
@@ -208,6 +220,9 @@ class MainWindow(QMainWindow):
         dfm_layout.addLayout(
             make_color_row("yellow", "Undercuts / back-draft faces")
         )
+        dfm_layout.addLayout(
+        make_color_row("orange", "Rib/Boss over-thickness regions")
+)
 
         dfm_layout.addSpacing(10)
 
@@ -223,18 +238,21 @@ class MainWindow(QMainWindow):
         self.chk_show_corners.setChecked(False)
         self.chk_show_undercuts = QCheckBox("Undercuts")
         self.chk_show_undercuts.setChecked(False)
+        self.chk_show_rib_boss = QCheckBox("Rib/Boss thickness")
+        self.chk_show_rib_boss.setChecked(False)
 
         # When any checkbox changes, just re-run coloring on the current part
         self.chk_show_thickness.stateChanged.connect(self.on_issue_filter_changed)
         self.chk_show_draft.stateChanged.connect(self.on_issue_filter_changed)
         self.chk_show_corners.stateChanged.connect(self.on_issue_filter_changed)
         self.chk_show_undercuts.stateChanged.connect(self.on_issue_filter_changed)
+        self.chk_show_rib_boss.stateChanged.connect(self.on_issue_filter_changed)
 
         dfm_layout.addWidget(self.chk_show_thickness)
         dfm_layout.addWidget(self.chk_show_draft)
         dfm_layout.addWidget(self.chk_show_corners)
         dfm_layout.addWidget(self.chk_show_undercuts)
-
+        dfm_layout.addWidget(self.chk_show_rib_boss)
         dfm_layout.addSpacing(10)
 
         # --- SECTION 6: Details Table (compact) ---
@@ -248,7 +266,7 @@ class MainWindow(QMainWindow):
         dfm_layout.addWidget(self.dfm_table)
 
         dfm_layout.addStretch()
-        content_layout.addWidget(self.dfm_panel, stretch=2)
+        
 
         # ---- Menu bar ----
         self._create_menu()
@@ -288,6 +306,7 @@ class MainWindow(QMainWindow):
         self.chk_show_draft.setChecked(False)
         self.chk_show_corners.setChecked(False)
         self.chk_show_undercuts.setChecked(False)
+        self.chk_show_rib_boss.setChecked(False)
 
         # Load STL with no warnings and no colors
         self.load_and_display_stl(
@@ -332,6 +351,9 @@ class MainWindow(QMainWindow):
             check_key = "undercuts"
             now_enabled = self.chk_show_undercuts.isChecked()
 
+        elif sender is self.chk_show_rib_boss:
+            check_key = "rib_boss"
+            now_enabled = self.chk_show_rib_boss.isChecked()
         else:
             return
 
@@ -381,6 +403,7 @@ class MainWindow(QMainWindow):
         corner_info = checks.get("sharp_corners", {})
         draft_info = checks.get("draft_angle", {})
         und_info = checks.get("undercuts", {})
+        rib_boss_info = checks.get("rib_boss", {})
 
         g_status = global_info.get("status", "-")
         g_smallest = global_info.get("smallest_dimension", "-")
@@ -398,7 +421,10 @@ class MainWindow(QMainWindow):
         u_status = und_info.get("status", "-")
         u_num_faces = und_info.get("num_undercut_faces", "-")
 
-        # ---- Part Info ----
+        rb_status = rib_boss_info.get("status", "-")
+        rb_num = rib_boss_info.get("num_over_thick_vertices", "-")
+        rb_factor = rib_boss_info.get("factor", "-")
+        # ---- Part Info Labels ----
         if self.last_file_path:
             self.lbl_part_name.setText(f"File: {os.path.basename(self.last_file_path)}")
         else:
@@ -443,6 +469,8 @@ class MainWindow(QMainWindow):
         add_row("Draft – faces below min", d_bad_faces)
         add_row("Pull direction", self.combo_pull.currentText())
         add_row("Undercuts - Faces count", u_num_faces)
+        add_row("Rib/Boss - Over-thick vertices", rb_num)
+        add_row("Rib/Boss - Factor", rb_factor)
 
 
     # ------------------------------------------------------------------
@@ -495,6 +523,7 @@ class MainWindow(QMainWindow):
         corner_info = checks.get("sharp_corners", {})
         draft_info = checks.get("draft_angle", {})
         und_info = checks.get("undercuts", {})
+        rib_boss_info = checks.get("rib_boss", {})  
 
         lines = []
         lines.append("SmartDFM – Injection Molding DFM Report")
@@ -576,6 +605,18 @@ class MainWindow(QMainWindow):
         lines.append(f"  Undercut faces: {und_info.get('num_undercut_faces', 'N/A')}")
         lines.append(f"  Angle Threshold (deg): {und_info.get('angle_threshold_deg', 'N/A')}")
         lines.append(f"  Max Undercut Angle (deg): {und_info.get('max_undercut_angle_deg', 'N/A')}")
+        lines.append("")
+
+        # Rib / Boss thickness check
+        lines.append("Rib/Boss Thickness Check")
+        lines.append("-" * 30)
+        lines.append(f"  Status: {rib_boss_info.get('status', 'N/A')}")
+        lines.append(f"  Message: {rib_boss_info.get('message', '')}")
+        lines.append(f"  Nominal wall thickness: {rib_boss_info.get('base_wall_thickness', 'N/A')}")
+        lines.append(f"  Max thickness: {rib_boss_info.get('max_thickness', 'N/A')}")
+        lines.append(f"  Factor (× wall): {rib_boss_info.get('factor', 'N/A')}")
+        lines.append(f"  Threshold thickness: {rib_boss_info.get('threshold', 'N/A')}")
+        lines.append(f"  Over-thick vertices: {rib_boss_info.get('num_over_thick_vertices', 'N/A')}")
         lines.append("")
 
         # Screenshot info
@@ -668,12 +709,14 @@ class MainWindow(QMainWindow):
             corner_chk = checks.get("sharp_corners", {})
             draft_chk = checks.get("draft_angle", {})
             undercut_chk = checks.get("undercuts", {})
+            rib_boss_chk = checks.get("rib_boss", {})
 
             per_vertex_thickness = local_chk.get("per_vertex_thickness", None)
             threshold = local_chk.get("threshold", None)
             corner_mask = corner_chk.get("corner_vertex_mask", None)
             draft_vertex_mask = draft_chk.get("bad_vertex_mask", None)
             undercut_vertex_mask = undercut_chk.get("bad_vertex_mask", None)
+            rib_boss_vertex_mask = rib_boss_chk.get("bad_vertex_mask", None)
 
             # Center + normalize
             center = vertices.mean(axis=0)
@@ -686,24 +729,46 @@ class MainWindow(QMainWindow):
             # Build per-vertex colors
             vertex_colors = np.zeros((vertices.shape[0], 4), dtype=float)
             vertex_colors[:, :] = [0.7, 0.7, 0.7, 1.0]  # grey default
+
             # --- Build Boolean masks ---
+
+            # Thin regions (local thickness)
             thin_mask = np.zeros(vertices.shape[0], dtype=bool)
             if per_vertex_thickness is not None and threshold is not None:
                 t = np.array(per_vertex_thickness, dtype=float)
                 finite = np.isfinite(t)
-                thin_mask = finite & (t < threshold)
+                if t.shape[0] == vertices.shape[0]:
+                    thin_mask = finite & (t < threshold)
 
+            # Sharp corners
             corner_vertex_mask = np.zeros(vertices.shape[0], dtype=bool)
             if corner_mask is not None:
-                corner_vertex_mask = np.array(corner_mask, dtype=bool)
+                cm = np.array(corner_mask, dtype=bool)
+                if cm.shape[0] == vertices.shape[0]:
+                    corner_vertex_mask = cm
 
+            # Draft issues
             draft_bad_mask = np.zeros(vertices.shape[0], dtype=bool)
             if draft_vertex_mask is not None:
-                draft_bad_mask = np.array(draft_vertex_mask, dtype=bool)
+                dm = np.array(draft_vertex_mask, dtype=bool)
+                if dm.shape[0] == vertices.shape[0]:
+                    draft_bad_mask = dm
 
+            # Undercuts
             undercut_bad_mask = np.zeros(vertices.shape[0], dtype=bool)
             if undercut_vertex_mask is not None:
-                undercut_bad_mask = np.array(undercut_vertex_mask, dtype=bool)
+                um = np.array(undercut_vertex_mask, dtype=bool)
+                if um.shape[0] == vertices.shape[0]:
+                    undercut_bad_mask = um
+
+            # Rib/Boss over-thickness
+            rib_bad_mask = np.zeros(vertices.shape[0], dtype=bool)
+            if rib_boss_vertex_mask is not None:
+                rb = np.array(rib_boss_vertex_mask, dtype=bool)
+                if rb.shape[0] == vertices.shape[0]:
+                    rib_bad_mask = rb
+
+            # --- Apply checkbox filters ---
             if not self.chk_show_thickness.isChecked():
                 thin_mask[:] = False
             if not self.chk_show_draft.isChecked():
@@ -712,22 +777,44 @@ class MainWindow(QMainWindow):
                 corner_vertex_mask[:] = False
             if not self.chk_show_undercuts.isChecked():
                 undercut_bad_mask[:] = False
+            if not self.chk_show_rib_boss.isChecked():
+                rib_bad_mask[:] = False
 
             # --- Assign colors with priority ---
-            # PRIORITY: thin (red) > draft (green) > sharp corners (blue)
+            # Priority:
+            #   1) Undercuts – yellow
+            #   2) Thin regions – red
+            #   3) Rib/Boss over-thick – orange
+            #   4) Draft issues – green
+            #   5) Sharp corners – blue
+
+            # 1) Undercuts: yellow
             vertex_colors[undercut_bad_mask] = [1.0, 1.0, 0.0, 1.0]  # yellow
-            
+
+            # 2) Thin regions: red (not undercut)
             thin_only = thin_mask & (~undercut_bad_mask)
             vertex_colors[thin_only] = [1.0, 0.0, 0.0, 1.0]  # red
-            
-            draft_only = (~thin_mask) & draft_bad_mask
+
+            # 3) Rib/Boss over-thickness: orange (not undercut, not thin)
+            rib_only = rib_bad_mask & (~undercut_bad_mask) & (~thin_mask)
+            vertex_colors[rib_only] = [1.0, 0.5, 0.0, 1.0]  # orange
+
+            # 4) Draft issues: green (not undercut, not thin, not rib)
+            draft_only = (
+                draft_bad_mask
+                & (~undercut_bad_mask)
+                & (~thin_mask)
+                & (~rib_bad_mask)
+            )
             vertex_colors[draft_only] = [0.0, 1.0, 0.0, 1.0]  # green
 
+            # 5) Sharp corners: blue (only where nothing else applied)
             corner_only = (
                 corner_vertex_mask
                 & (~thin_mask)
                 & (~draft_bad_mask)
                 & (~undercut_bad_mask)
+                & (~rib_bad_mask)
             )
             vertex_colors[corner_only] = [0.0, 0.0, 1.0, 1.0]  # blue
 
@@ -798,7 +885,13 @@ class MainWindow(QMainWindow):
                     "DFM Warning – Undercuts",
                     undercut_chk.get("message", "")
                 )
-
+            # RIB/BOSS thickness
+            if rib_boss_chk and rib_boss_chk.get("status") == "WARNING":
+                _maybe_warn(
+                    "rib_boss",
+                    "DFM Warning – Rib/Boss Thickness",
+                    rib_boss_chk.get("message", "Over-thick rib/boss regions detected."),
+                )
             # Status bar
             if hasattr(self, "status"):
                 msg = (
