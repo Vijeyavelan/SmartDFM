@@ -81,8 +81,20 @@ class MainWindow(QMainWindow):
         self.mesh_item = None
 
         # ---- Right-side DFM panel ----
+        # ---- Right-side DFM panel inside scroll area ----
+        from PySide6.QtWidgets import QScrollArea
+
         self.dfm_panel = QWidget()
         dfm_layout = QVBoxLayout(self.dfm_panel)
+
+        # Scroll wrapper so panel never gets cut off
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self.dfm_panel)
+        scroll.setMinimumWidth(320)
+        scroll.setMaximumWidth(420)
+
+        content_layout.addWidget(scroll, stretch=0)
 
         # --- SECTION 0: Title ---
         self.lbl_title = QLabel("<b>Injection Molding DFM Summary</b>")
@@ -254,7 +266,7 @@ class MainWindow(QMainWindow):
         dfm_layout.addWidget(self.dfm_table)
 
         dfm_layout.addStretch()
-        content_layout.addWidget(self.dfm_panel, stretch=2)
+        
 
         # ---- Menu bar ----
         self._create_menu()
