@@ -99,7 +99,7 @@ class MainWindow(QMainWindow):
 
         # ---- 3D View ----
         self.view = gl.GLViewWidget()
-        self.view.setBackgroundColor((0.9, 0.9, 0.9, 1.0))
+        self.view.setBackgroundColor((0.05, 0.05, 0.05, 1.0))
         self.view.opts["distance"] = 40
         content_layout.addWidget(self.view, stretch=4)
 
@@ -1051,6 +1051,17 @@ class MainWindow(QMainWindow):
                 # IMPORTANT: GLAxisItem has no setPos -> use transforms
                 self.axis_item.resetTransform()
                 self.axis_item.translate(axis_pos[0], axis_pos[1], axis_pos[2])
+
+            
+            # Build mesh geometry once, for normals + rendering
+            mesh_geom = gl.MeshData(
+                vertexes=vertices_centered,
+                faces=faces,
+            )
+
+            # Per-vertex normals for simple lighting
+            normals = mesh_geom.vertexNormals()  # shape: (N, 3)
+            
             # Build per-vertex colors
             vertex_colors = np.zeros((vertices.shape[0], 4), dtype=float)
             vertex_colors[:, :] = [0.7, 0.7, 0.7, 1.0]  # grey default
@@ -1092,6 +1103,25 @@ class MainWindow(QMainWindow):
                 rb = np.array(rib_boss_vertex_mask, dtype=bool)
                 if rb.shape[0] == vertices.shape[0]:
                     rib_bad_mask = rb
+            
+            # --- Simple directional lighting (Blender-like feel) ---
+            # Light coming from above/side in view space
+            light_dir = np.array([0.3, 0.5, 0.8], dtype=float)
+            light_dir /= np.linalg.norm(light_dir)
+
+            # Ensure normals is proper shape
+            if normals is not None and normals.shape[0] == vertex_colors.shape[0]:
+                # cosine of angle between normal and light
+                dots = np.einsum("ij,j->i", normals, light_dir)
+                dots = np.clip(dots, 0.0, 1.0)
+
+                # map to brightness range (ambient + diffuse)
+                # 0.35 ambient, up to ~1.0 at best alignment
+                intensity = 0.35 + 0.65 * dots
+
+                # apply to RGB channels only, keep alpha = 1
+                vertex_colors[:, 0:3] *= intensity[:, None]
+
 
             # --- Apply checkbox filters ---
             # --- Apply active_check filter ---
@@ -1138,26 +1168,23 @@ class MainWindow(QMainWindow):
                 ok_mask = ~bad_mask
 
                 # Non-defect regions = green
-                vertex_colors[ok_mask] = [0.0, 1.0, 0.0, 1.0]   # green
+                vertex_colors[ok_mask] = [0.0, 0.9, 0.0, 1.0]   # green
                 # Defect regions = red
-                vertex_colors[bad_mask] = [1.0, 0.0, 0.0, 1.0]  # red
+                vertex_colors[bad_mask] = [1.0, 0.0, 0.0, 0.9]  # red
             # else: active_check is None → leave everything grey
 
-            mesh_data = gl.MeshData(
-                vertexes=vertices_centered,
-                faces=faces,
-                vertexColors=vertex_colors,
-            )
+            # Attach shaded colors to the mesh geometry
+            mesh_geom.setVertexColors(vertex_colors)
 
             if self.mesh_item is not None:
                 self.view.removeItem(self.mesh_item)
 
             self.mesh_item = gl.GLMeshItem(
-                meshdata=mesh_data,
-                smooth=False,
+                meshdata=mesh_geom,
+                smooth=True,                 # smooth shading like CAD
                 drawFaces=True,
                 drawEdges=True,
-                edgeColor=(0, 0, 0, 1.0),
+                edgeColor=(0.2, 0.2, 0.2, 1.0),
             )
             self.view.addItem(self.mesh_item)
 
