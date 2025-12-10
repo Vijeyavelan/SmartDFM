@@ -1,6 +1,5 @@
 # ui/main_window.py
 
-from email.mime import message
 import sys
 import os
 import numpy as np
@@ -9,7 +8,8 @@ from PySide6.QtWidgets import (
     QApplication,
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QMenuBar,
     QFileDialog, QMessageBox, QTableWidget, QTableWidgetItem,
-    QLabel, QHeaderView, QPushButton, QDoubleSpinBox, QComboBox, QCheckBox
+    QLabel, QHeaderView, QPushButton, QDoubleSpinBox, QComboBox, QCheckBox,
+    QFrame, QScrollArea, QToolButton, QButtonGroup, QStackedWidget
 )
 from PySide6.QtGui import QAction
 
@@ -21,8 +21,6 @@ from core.dfm_checks.thickness import (
     MIN_GLOBAL_THICKNESS,
     LOCAL_MIN_THICKNESS,
 )
-
-
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -37,6 +35,9 @@ class MainWindow(QMainWindow):
         # Store last analysis and file path (for export + re-run)
         self.last_dfm_results = None
         self.last_file_path = None
+        # Which DFM issue is currently highlighted in 3D
+        # (None = no special highlighting)
+        self.active_visual_check = None
 
         # ---- Central widget ----
         central_widget = QWidget()
@@ -45,23 +46,43 @@ class MainWindow(QMainWindow):
         # Root vertical layout (button bar on top, content below)
         root_layout = QVBoxLayout(central_widget)
 
-        # ---- Top button bar ----
-        button_bar = QHBoxLayout()
 
-        # Open STL button
-        self.open_button = QPushButton("Open STL…")
-        self.open_button.clicked.connect(self.open_stl_dialog)
-        button_bar.addWidget(self.open_button)
+        # ---- Top feature mode bar (tab-like) ----
+        self.feature_buttons = {}
+        self.feature_button_group = QButtonGroup(self)
+        self.feature_button_group.setExclusive(True)
 
-        # Export DFM Report button
-        self.export_button = QPushButton("Export DFM Report…")
-        self.export_button.clicked.connect(self.export_dfm_report)
-        button_bar.addWidget(self.export_button)
+        feature_bar_widget = QWidget()
+        feature_bar_layout = QHBoxLayout(feature_bar_widget)
+        feature_bar_layout.setContentsMargins(0, 0, 0, 0)
+        feature_bar_layout.setSpacing(6)
 
-        button_bar.addStretch()
-        root_layout.addLayout(button_bar)
+        def add_feature_button(key: str, label: str):
+            btn = QToolButton()
+            btn.setText(label)
+            btn.setCheckable(True)
+            btn.setAutoExclusive(True)
+            btn.clicked.connect(lambda checked, k=key: self.on_feature_tab_clicked(k))
+            feature_bar_layout.addWidget(btn)
+            self.feature_button_group.addButton(btn)
+            self.feature_buttons[key] = btn
 
-        # ---- Content layout: 3D view (left) + DFM panel (right) ----
+        add_feature_button("open", "Open")
+        add_feature_button("home", "Home")
+        add_feature_button("thickness", "Wall Thickness")
+        add_feature_button("sharp", "Sharp Corners")
+        add_feature_button("draft", "Draft Angle")
+        add_feature_button("undercuts", "Undercuts")
+        add_feature_button("rib_boss", "Rib/Boss")
+        add_feature_button("export", "Export DFM")
+
+        # default selected = OPEN
+        self.feature_buttons["home"].setChecked(True)
+        feature_bar_layout.addStretch()
+        root_layout.addWidget(feature_bar_widget)
+        self.feature_buttons["open"].clicked.connect(self.open_stl_dialog)
+        self.feature_buttons["export"].clicked.connect(self.export_dfm_report)
+        # ---- Content layout: 3D view (left) + Right feature stack (right) ----
         content_layout = QHBoxLayout()
         root_layout.addLayout(content_layout)
 
@@ -80,10 +101,7 @@ class MainWindow(QMainWindow):
         # Store current mesh item
         self.mesh_item = None
 
-        # ---- Right-side DFM panel ----
-        # ---- Right-side DFM panel inside scroll area ----
-        from PySide6.QtWidgets import QScrollArea
-
+        # ---- Right-side DFM panel (this becomes the OPEN page content) ----
         self.dfm_panel = QWidget()
         dfm_layout = QVBoxLayout(self.dfm_panel)
 
@@ -94,31 +112,58 @@ class MainWindow(QMainWindow):
         scroll.setMinimumWidth(320)
         scroll.setMaximumWidth(420)
 
-        content_layout.addWidget(scroll, stretch=0)
-
         # --- SECTION 0: Title ---
         self.lbl_title = QLabel("<b>Injection Molding DFM Summary</b>")
         dfm_layout.addWidget(self.lbl_title)
-
         dfm_layout.addSpacing(6)
 
-        # --- SECTION 1: Part Info ---
-        self.lbl_part_header = QLabel("<b>Part Info</b>")
-        dfm_layout.addWidget(self.lbl_part_header)
 
-        self.lbl_part_name = QLabel("File: -")
-        self.lbl_part_tris = QLabel("Triangles: -")
-        self.lbl_part_size = QLabel("Size (X×Y×Z): -")
+        # ---- Right side: stacked pages for each feature ----
+        self.feature_stack = QStackedWidget()
+        self.feature_page_indices = {}
 
-        dfm_layout.addWidget(self.lbl_part_name)
-        dfm_layout.addWidget(self.lbl_part_tris)
-        dfm_layout.addWidget(self.lbl_part_size)
+        # HOME page: simple Part Info panel
+        self.page_home = QWidget()
+        layout_home = QVBoxLayout(self.page_home)
+        layout_home.setContentsMargins(10, 10, 10, 10)
+        layout_home.setSpacing(6)
 
-        dfm_layout.addSpacing(10)
+        self.home_part_header = QLabel("<b>Part Info</b>")
+        self.home_file_label = QLabel("File: -")
+        self.home_triangles_label = QLabel("Triangles: -")
+        self.home_size_label = QLabel("Size (X×Y×Z): -")
 
-        # --- SECTION 2: Process Settings (thickness + pull direction) ---
-        self.lbl_thresholds = QLabel("<b>Process Settings</b>")
-        dfm_layout.addWidget(self.lbl_thresholds)
+        layout_home.addWidget(self.home_part_header)
+        layout_home.addSpacing(6)
+        layout_home.addWidget(self.home_file_label)
+        layout_home.addWidget(self.home_triangles_label)
+        layout_home.addWidget(self.home_size_label)
+        layout_home.addStretch()
+
+        idx_home = self.feature_stack.addWidget(self.page_home)
+        self.feature_page_indices["home"] = idx_home
+
+        # OPEN / SUMMARY page wraps the existing scroll+dfm_panel
+        self.page_open = QWidget()
+        page_open_layout = QVBoxLayout(self.page_open)
+        page_open_layout.setContentsMargins(0, 0, 0, 0)
+        page_open_layout.setSpacing(0)
+        page_open_layout.addWidget(scroll)
+
+        idx_open = self.feature_stack.addWidget(self.page_open)
+        self.feature_page_indices["open"] = idx_open
+
+    # ------------------------------------------------------------------
+    # WALL THICKNESS PAGE
+    # ------------------------------------------------------------------
+        self.page_thickness = QWidget()
+        layout_thickness = QVBoxLayout(self.page_thickness)
+        layout_thickness.setContentsMargins(10, 10, 10, 10)
+        layout_thickness.setSpacing(6)
+
+        thickness_header = QLabel("<b>Wall Thickness</b>")
+        layout_thickness.addWidget(thickness_header)
+        layout_thickness.addSpacing(6)
 
         # Global thickness threshold spin box
         global_row = QHBoxLayout()
@@ -130,7 +175,7 @@ class MainWindow(QMainWindow):
         self.spin_global.setValue(MIN_GLOBAL_THICKNESS)
         self.spin_global.valueChanged.connect(self.on_threshold_changed)
         global_row.addWidget(self.spin_global)
-        dfm_layout.addLayout(global_row)
+        layout_thickness.addLayout(global_row)
 
         # Local thickness threshold spin box
         local_row = QHBoxLayout()
@@ -142,7 +187,78 @@ class MainWindow(QMainWindow):
         self.spin_local.setValue(LOCAL_MIN_THICKNESS)
         self.spin_local.valueChanged.connect(self.on_threshold_changed)
         local_row.addWidget(self.spin_local)
-        dfm_layout.addLayout(local_row)
+        layout_thickness.addLayout(local_row)
+
+        layout_thickness.addSpacing(10)
+
+        # Thickness-specific DFM overview (already added earlier)
+        self.thickness_status_global = QLabel("Global Thickness: -")
+        self.thickness_status_local = QLabel("Local Thickness: -")
+        self.thickness_smallest_dim = QLabel("Smallest Dimension: -")
+        self.thickness_min_local = QLabel("Min Local Thickness: -")
+        self.thickness_thin_vertices = QLabel("Thin Vertices: -")
+
+        layout_thickness.addWidget(self.thickness_status_global)
+        layout_thickness.addWidget(self.thickness_status_local)
+        layout_thickness.addWidget(self.thickness_smallest_dim)
+        layout_thickness.addWidget(self.thickness_min_local)
+        layout_thickness.addWidget(self.thickness_thin_vertices)
+
+        # Thickness details table
+        self.thickness_table = QTableWidget()
+        self.thickness_table.setColumnCount(2)
+        self.thickness_table.setHorizontalHeaderLabels(["Check", "Key Value"])
+        self.thickness_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout_thickness.addWidget(self.thickness_table)
+
+        layout_thickness.addStretch()
+
+        idx_thickness = self.feature_stack.addWidget(self.page_thickness)
+        self.feature_page_indices["thickness"] = idx_thickness
+
+    # ------------------------------------------------------------------
+    # SHARP CORNERS PAGE
+    # ------------------------------------------------------------------
+        # Sharp Corners page
+        self.page_sharp = QWidget()
+        layout_sharp = QVBoxLayout(self.page_sharp)
+        layout_sharp.setContentsMargins(10, 10, 10, 10)
+        layout_sharp.setSpacing(6)
+
+        sharp_header = QLabel("<b>Sharp Corners</b>")
+        layout_sharp.addWidget(sharp_header)
+        layout_sharp.addSpacing(6)
+
+        # 🚩 These labels are ONLY for the Sharp Corners page
+        self.sharp_status = QLabel("Sharp Corners: -")
+        self.sharp_edge_count = QLabel("Sharp Edges: -")
+
+        layout_sharp.addWidget(self.sharp_status)
+        layout_sharp.addWidget(self.sharp_edge_count)
+
+        # Sharp-corners-only details table
+        self.sharp_table = QTableWidget()
+        self.sharp_table.setColumnCount(2)
+        self.sharp_table.setHorizontalHeaderLabels(["Check", "Key Value"])
+        self.sharp_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout_sharp.addWidget(self.sharp_table)
+
+        layout_sharp.addStretch()
+
+        idx_sharp = self.feature_stack.addWidget(self.page_sharp)
+        self.feature_page_indices["sharp"] = idx_sharp
+
+    # ------------------------------------------------------------------
+    # DRAFT ANGLE PAGE
+    # ------------------------------------------------------------------
+        self.page_draft = QWidget()
+        layout_draft = QVBoxLayout(self.page_draft)
+        layout_draft.setContentsMargins(10, 10, 10, 10)
+        layout_draft.setSpacing(6)
+
+        draft_header = QLabel("<b>Draft & Pull Direction</b>")
+        layout_draft.addWidget(draft_header)
+        layout_draft.addSpacing(6)
 
         # Pull direction selector
         pull_row = QHBoxLayout()
@@ -152,121 +268,103 @@ class MainWindow(QMainWindow):
         self.combo_pull.setCurrentText("+Z")
         self.combo_pull.currentIndexChanged.connect(self.on_threshold_changed)
         pull_row.addWidget(self.combo_pull)
-        dfm_layout.addLayout(pull_row)
+        layout_draft.addLayout(pull_row)
 
-        dfm_layout.addSpacing(10)
+        layout_draft.addSpacing(10)
 
-        # --- SECTION 3: DFM Overview (traffic-light style) ---
-        self.lbl_overview = QLabel("<b>DFM Overview</b>")
-        dfm_layout.addWidget(self.lbl_overview)
+        # Draft-specific overview
+        self.draft_status = QLabel("Draft Angle: -")
+        self.draft_bad_faces = QLabel("Faces below min draft: -")
 
-        self.lbl_global_status = QLabel("Global Thickness: -")
-        self.lbl_local_status = QLabel("Local Thickness: -")
-        self.lbl_corner_status = QLabel("Sharp Corners: -")
-        self.lbl_draft_status = QLabel("Draft Angle: -")
-        self.lbl_undercut_status = QLabel("Undercuts: -")
+        layout_draft.addWidget(self.draft_status)
+        layout_draft.addWidget(self.draft_bad_faces)
 
-        dfm_layout.addWidget(self.lbl_global_status)
-        dfm_layout.addWidget(self.lbl_local_status)
-        dfm_layout.addWidget(self.lbl_corner_status)
-        dfm_layout.addWidget(self.lbl_draft_status)
-        dfm_layout.addWidget(self.lbl_undercut_status)
+        self.draft_table = QTableWidget()
+        self.draft_table.setColumnCount(2)
+        self.draft_table.setHorizontalHeaderLabels(["Check", "Key Value"])
+        self.draft_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout_draft.addWidget(self.draft_table)
 
-        dfm_layout.addSpacing(8)
+        layout_draft.addStretch()
 
-        # Detailed summary for thickness / draft
-        self.lbl_global_value = QLabel("Smallest Dimension: -")
-        self.lbl_local_min = QLabel("Min Local Thickness: -")
-        self.lbl_local_thin_count = QLabel("Thin Vertices: -")
-        self.lbl_corner_count = QLabel("Sharp Edges: -")
-        self.lbl_draft_bad_faces = QLabel("Faces below min draft: -")
-        self.lbl_undercut_faces = QLabel("Undercut Faces: -")
+        idx_draft = self.feature_stack.addWidget(self.page_draft)
+        self.feature_page_indices["draft"] = idx_draft
 
-        dfm_layout.addWidget(self.lbl_global_value)
-        dfm_layout.addWidget(self.lbl_local_min)
-        dfm_layout.addWidget(self.lbl_local_thin_count)
-        dfm_layout.addWidget(self.lbl_corner_count)
-        dfm_layout.addWidget(self.lbl_draft_bad_faces)
-        dfm_layout.addWidget(self.lbl_undercut_faces)
+    # ------------------------------------------------------------------
+    # UNDERCUTS PAGE
+    # ------------------------------------------------------------------
+        self.page_undercuts = QWidget()
+        layout_undercuts = QVBoxLayout(self.page_undercuts)
+        layout_undercuts.setContentsMargins(10, 10, 10, 10)
+        layout_undercuts.setSpacing(6)
 
-        dfm_layout.addSpacing(10)
+        undercuts_header = QLabel("<b>Undercuts</b>")
+        layout_undercuts.addWidget(undercuts_header)
+        layout_undercuts.addSpacing(6)
 
-        # --- SECTION 4: Color Legend ---
-        self.lbl_legend_header = QLabel("<b>Color Legend</b>")
-        dfm_layout.addWidget(self.lbl_legend_header)
+        self.undercut_status = QLabel("Undercuts: -")
+        self.undercut_faces = QLabel("Undercut Faces: -")
 
-        def make_color_row(color_css: str, text: str):
-            row = QHBoxLayout()
-            swatch = QLabel()
-            swatch.setStyleSheet(
-                f"background-color: {color_css}; border: 1px solid #333;"
-            )
-            swatch.setFixedSize(16, 16)  # fixed square, won't resize
-            row.addWidget(swatch)
-            row.addSpacing(6)
-            row.addWidget(QLabel(text))
-            row.addStretch()
-            return row
+        layout_undercuts.addWidget(self.undercut_status)
+        layout_undercuts.addWidget(self.undercut_faces)
 
-        dfm_layout.addLayout(
-            make_color_row("red", "Thin regions (local thickness below threshold)")
-        )
-        dfm_layout.addLayout(
-            make_color_row("lime", "Faces with insufficient draft")
-        )
-        dfm_layout.addLayout(
-            make_color_row("blue", "Sharp internal corners / edges")
-        )
-        dfm_layout.addLayout(
-            make_color_row("yellow", "Undercuts / back-draft faces")
-        )
-        dfm_layout.addLayout(
-        make_color_row("orange", "Rib/Boss over-thickness regions")
-)
+        self.undercut_table = QTableWidget()
+        self.undercut_table.setColumnCount(2)
+        self.undercut_table.setHorizontalHeaderLabels(["Check", "Key Value"])
+        self.undercut_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout_undercuts.addWidget(self.undercut_table)
 
-        dfm_layout.addSpacing(10)
+        layout_undercuts.addStretch()
 
-        # --- SECTION 5: Issue visibility toggles ---
-        self.lbl_filters_header = QLabel("<b>Show in 3D view</b>")
-        dfm_layout.addWidget(self.lbl_filters_header)
+        idx_undercuts = self.feature_stack.addWidget(self.page_undercuts)
+        self.feature_page_indices["undercuts"] = idx_undercuts
 
-        self.chk_show_thickness = QCheckBox("Thin regions")
-        self.chk_show_thickness.setChecked(False)
-        self.chk_show_draft = QCheckBox("Draft issues")
-        self.chk_show_draft.setChecked(False)
-        self.chk_show_corners = QCheckBox("Sharp corners")
-        self.chk_show_corners.setChecked(False)
-        self.chk_show_undercuts = QCheckBox("Undercuts")
-        self.chk_show_undercuts.setChecked(False)
-        self.chk_show_rib_boss = QCheckBox("Rib/Boss thickness")
-        self.chk_show_rib_boss.setChecked(False)
+    # ------------------------------------------------------------------
+    # RIB/BOSS THICKNESS PAGE
+    # ------------------------------------------------------------------
+        self.page_rib_boss = QWidget()
+        layout_rib_boss = QVBoxLayout(self.page_rib_boss)
+        layout_rib_boss.setContentsMargins(10, 10, 10, 10)
+        layout_rib_boss.setSpacing(6)
 
-        # When any checkbox changes, just re-run coloring on the current part
-        self.chk_show_thickness.stateChanged.connect(self.on_issue_filter_changed)
-        self.chk_show_draft.stateChanged.connect(self.on_issue_filter_changed)
-        self.chk_show_corners.stateChanged.connect(self.on_issue_filter_changed)
-        self.chk_show_undercuts.stateChanged.connect(self.on_issue_filter_changed)
-        self.chk_show_rib_boss.stateChanged.connect(self.on_issue_filter_changed)
+        rib_header = QLabel("<b>Rib/Boss Thickness</b>")
+        layout_rib_boss.addWidget(rib_header)
+        layout_rib_boss.addSpacing(6)
 
-        dfm_layout.addWidget(self.chk_show_thickness)
-        dfm_layout.addWidget(self.chk_show_draft)
-        dfm_layout.addWidget(self.chk_show_corners)
-        dfm_layout.addWidget(self.chk_show_undercuts)
-        dfm_layout.addWidget(self.chk_show_rib_boss)
-        dfm_layout.addSpacing(10)
+        self.rib_status = QLabel("Rib/Boss: -")
+        self.rib_over_thick_vertices = QLabel("Over-thick vertices: -")
+        self.rib_factor_label = QLabel("Factor (× wall): -")
 
-        # --- SECTION 6: Details Table (compact) ---
-        details_label = QLabel("<b>Details</b>")
-        dfm_layout.addWidget(details_label)
+        layout_rib_boss.addWidget(self.rib_status)
+        layout_rib_boss.addWidget(self.rib_over_thick_vertices)
+        layout_rib_boss.addWidget(self.rib_factor_label)
 
-        self.dfm_table = QTableWidget()
-        self.dfm_table.setColumnCount(2)
-        self.dfm_table.setHorizontalHeaderLabels(["Check", "Key Value"])
-        self.dfm_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        dfm_layout.addWidget(self.dfm_table)
+        self.rib_table = QTableWidget()
+        self.rib_table.setColumnCount(2)
+        self.rib_table.setHorizontalHeaderLabels(["Check", "Key Value"])
+        self.rib_table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        layout_rib_boss.addWidget(self.rib_table)
 
-        dfm_layout.addStretch()
-        
+        layout_rib_boss.addStretch()
+
+        idx_rib_boss = self.feature_stack.addWidget(self.page_rib_boss)
+        self.feature_page_indices["rib_boss"] = idx_rib_boss
+
+    # ------------------------------------------------------------------
+    # EXPORT PAGE
+    # ------------------------------------------------------------------
+        self.page_export = QWidget()
+        layout_export = QVBoxLayout(self.page_export)
+        layout_export.addWidget(QLabel("Export DFM – feature details will go here."))
+        layout_export.addStretch()
+        idx_export = self.feature_stack.addWidget(self.page_export)
+        self.feature_page_indices["export"] = idx_export
+
+        # Add the stacked widget to the content layout (right side)
+        content_layout.addWidget(self.feature_stack, stretch=2)
+
+        # show OPEN page by default
+        self.feature_stack.setCurrentIndex(self.feature_page_indices["home"])
 
         # ---- Menu bar ----
         self._create_menu()
@@ -290,6 +388,40 @@ class MainWindow(QMainWindow):
         file_menu.addAction(export_action)
 
     # ------------------------------------------------------------------
+    # Feature tab click handler
+    # ------------------------------------------------------------------
+    def on_feature_tab_clicked(self, feature_id: str):
+        """
+        Switch the right-hand panel to the selected feature's page
+        and update which DFM issue is highlighted in the 3D view.
+        """
+        # Switch page
+        idx = self.feature_page_indices.get(feature_id)
+        if idx is not None:
+            self.feature_stack.setCurrentIndex(idx)
+
+        # Decide which DFM issue to highlight
+        if feature_id == "thickness":
+            self.active_visual_check = "local_thickness"
+        elif feature_id == "sharp":
+            self.active_visual_check = "sharp_corners"
+        elif feature_id == "draft":
+            self.active_visual_check = "draft_angle"
+        elif feature_id == "undercuts":
+            self.active_visual_check = "undercuts"
+        elif feature_id == "rib_boss":
+            self.active_visual_check = "rib_boss"
+        else:
+            # home, open, export → no special highlight
+            self.active_visual_check = None
+
+        # Re-draw current part with the chosen highlight (if any)
+        if self.last_file_path is not None and feature_id != "export":
+            self.load_and_display_stl(
+                self.last_file_path,
+                active_check=self.active_visual_check,
+            )
+    # ------------------------------------------------------------------
     # File open
     # ------------------------------------------------------------------
     def open_stl_dialog(self):
@@ -301,17 +433,18 @@ class MainWindow(QMainWindow):
         )
         if not file_path:
             return
-        # Reset all issue filters when a new file is opened
-        self.chk_show_thickness.setChecked(False)
-        self.chk_show_draft.setChecked(False)
-        self.chk_show_corners.setChecked(False)
-        self.chk_show_undercuts.setChecked(False)
-        self.chk_show_rib_boss.setChecked(False)
+
+        # Reset active highlight when a new file is opened
+        self.active_visual_check = None
+
+        # Always switch back to the OPEN tab when a new file is loaded
+        self.feature_buttons["open"].setChecked(True)
+        self.feature_stack.setCurrentIndex(self.feature_page_indices["open"])
 
         # Load STL with no warnings and no colors
         self.load_and_display_stl(
             file_path,
-            active_check=None,
+            active_check=self.active_visual_check,
             show_all_warnings=False,
         )
 
@@ -321,58 +454,11 @@ class MainWindow(QMainWindow):
     def on_threshold_changed(self, value):
         if self.last_file_path is None:
             return
-        self.load_and_display_stl(self.last_file_path)
-    
-    def on_issue_filter_changed(self, state):
-        """
-        Handles toggling of visibility checkboxes.
-        OFF → ON: show popup for this check ONLY
-        ON → OFF: no popup
-        """
-        if self.last_file_path is None or self.last_dfm_results is None:
-            return
+        self.load_and_display_stl(
+            self.last_file_path,
+            active_check=self.active_visual_check,
+        )
 
-        sender = self.sender()
-
-        # Detect which checkbox was toggled
-        if sender is self.chk_show_thickness:
-            check_key = "local_thickness"
-            now_enabled = self.chk_show_thickness.isChecked()
-
-        elif sender is self.chk_show_draft:
-            check_key = "draft_angle"
-            now_enabled = self.chk_show_draft.isChecked()
-
-        elif sender is self.chk_show_corners:
-            check_key = "sharp_corners"
-            now_enabled = self.chk_show_corners.isChecked()
-
-        elif sender is self.chk_show_undercuts:
-            check_key = "undercuts"
-            now_enabled = self.chk_show_undercuts.isChecked()
-
-        elif sender is self.chk_show_rib_boss:
-            check_key = "rib_boss"
-            now_enabled = self.chk_show_rib_boss.isChecked()
-        else:
-            return
-
-        # OFF → ON → show popup for this check only
-        # OFF → ON → show popup
-        # ON → OFF → no popup
-        if now_enabled:
-            self.load_and_display_stl(
-                self.last_file_path,
-                active_check=check_key,
-                show_all_warnings=False,
-            )
-        else:
-            # Recolor and refresh WITHOUT any popup
-            self.load_and_display_stl(
-                self.last_file_path,
-                active_check=None,
-                show_all_warnings=False,
-    )
 
     # Helper: map UI selection → pull direction vector
     def get_pull_direction_vector(self) -> np.ndarray:
@@ -424,55 +510,177 @@ class MainWindow(QMainWindow):
         rb_status = rib_boss_info.get("status", "-")
         rb_num = rib_boss_info.get("num_over_thick_vertices", "-")
         rb_factor = rib_boss_info.get("factor", "-")
-        # ---- Part Info Labels ----
-        if self.last_file_path:
-            self.lbl_part_name.setText(f"File: {os.path.basename(self.last_file_path)}")
-        else:
-            self.lbl_part_name.setText("File: -")
 
-        self.lbl_part_tris.setText(f"Triangles: {tri_count}")
-
+        # ---- Home page Part Info ----
         ext = bbox.get("extents")
+
+        if self.last_file_path:
+            file_text = f"File: {os.path.basename(self.last_file_path)}"
+        else:
+            file_text = "File: -"
+
+        tris_text = f"Triangles: {tri_count}"
+
         if ext is not None and hasattr(ext, "__len__") and len(ext) == 3:
-            self.lbl_part_size.setText(
+            size_text = (
                 f"Size (X×Y×Z): {ext[0]:.2f} × {ext[1]:.2f} × {ext[2]:.2f}"
             )
         else:
-            self.lbl_part_size.setText("Size (X×Y×Z): -")
+            size_text = "Size (X×Y×Z): -"
 
-        # ---- Overview Labels ----
-        self.lbl_global_status.setText(f"Global Thickness: {g_status}")
-        self.lbl_local_status.setText(f"Local Thickness: {l_status}")
-        self.lbl_corner_status.setText(f"Sharp Corners: {c_status}")
-        self.lbl_draft_status.setText(f"Draft Angle: {d_status}")
-        self.lbl_undercut_status.setText(f"Undercuts: {u_status}")
+        # Update Home labels only
+        if hasattr(self, "home_file_label"):
+            self.home_file_label.setText(file_text)
+            self.home_triangles_label.setText(tris_text)
+            self.home_size_label.setText(size_text)
 
-        self.lbl_global_value.setText(f"Smallest Dimension: {g_smallest}")
-        self.lbl_local_min.setText(f"Min Local Thickness: {l_min}")
-        self.lbl_local_thin_count.setText(f"Thin Vertices: {l_count}")
-        self.lbl_corner_count.setText(f"Sharp Edges: {c_num}")
-        self.lbl_draft_bad_faces.setText(f"Faces below min draft: {d_bad_faces}")
-        self.lbl_undercut_faces.setText(f"Undercut Faces: {u_num_faces}")
+        # ---- Home page Part Info (if Home labels exist) ----
+        if hasattr(self, "home_file_label"):
+            if self.last_file_path:
+                self.home_file_label.setText(
+                    f"File: {os.path.basename(self.last_file_path)}"
+                )
+            else:
+                self.home_file_label.setText("File: -")
 
-        # ---- Details Table (compact) ----
-        self.dfm_table.setRowCount(0)
+            self.home_triangles_label.setText(f"Triangles: {tri_count}")
 
-        def add_row(name, value):
-            row = self.dfm_table.rowCount()
-            self.dfm_table.insertRow(row)
-            self.dfm_table.setItem(row, 0, QTableWidgetItem(str(name)))
-            self.dfm_table.setItem(row, 1, QTableWidgetItem(str(value)))
+            if ext is not None and hasattr(ext, "__len__") and len(ext) == 3:
+                self.home_size_label.setText(
+                    f"Size (X×Y×Z): {ext[0]:.2f} × {ext[1]:.2f} × {ext[2]:.2f}"
+                )
+            else:
+                self.home_size_label.setText("Size (X×Y×Z): -")
+            
+        # ---- Update per-feature page labels ----
+        # Wall Thickness page
+        if hasattr(self, "thickness_status_global"):
+            self.thickness_status_global.setText(f"Global Thickness: {g_status}")
+        if hasattr(self, "thickness_status_local"):
+            self.thickness_status_local.setText(f"Local Thickness: {l_status}")
+        if hasattr(self, "thickness_smallest_dim"):
+            self.thickness_smallest_dim.setText(f"Smallest Dimension: {g_smallest}")
+        if hasattr(self, "thickness_min_local"):
+            self.thickness_min_local.setText(f"Min Local Thickness: {l_min}")
+        if hasattr(self, "thickness_thin_vertices"):
+            self.thickness_thin_vertices.setText(f"Thin Vertices: {l_count}")
 
-        add_row("Global thickness – smallest dim", g_smallest)
-        add_row("Local thickness – min local", l_min)
-        add_row("Sharp corners – edge count", c_num)
-        add_row("Draft – faces below min", d_bad_faces)
-        add_row("Pull direction", self.combo_pull.currentText())
-        add_row("Undercuts - Faces count", u_num_faces)
-        add_row("Rib/Boss - Over-thick vertices", rb_num)
-        add_row("Rib/Boss - Factor", rb_factor)
+        # Sharp Corners page
+        if hasattr(self, "sharp_status"):
+            self.sharp_status.setText(f"Sharp Corners: {c_status}")
+        if hasattr(self, "sharp_edge_count"):
+            self.sharp_edge_count.setText(f"Sharp Edges: {c_num}")
 
+        # Draft page
+        if hasattr(self, "draft_status"):
+            self.draft_status.setText(f"Draft Angle: {d_status}")
+        if hasattr(self, "draft_bad_faces"):
+            self.draft_bad_faces.setText(f"Faces below min draft: {d_bad_faces}")
 
+        # Undercuts page
+        if hasattr(self, "undercut_status"):
+            self.undercut_status.setText(f"Undercuts: {u_status}")
+        if hasattr(self, "undercut_faces"):
+            self.undercut_faces.setText(f"Undercut Faces: {u_num_faces}")
+
+        # Rib/Boss page
+        if hasattr(self, "rib_status"):
+            self.rib_status.setText(f"Rib/Boss: {rb_status}")
+        if hasattr(self, "rib_over_thick_vertices"):
+            self.rib_over_thick_vertices.setText(
+                f"Over-thick vertices: {rb_num}"
+            )
+        if hasattr(self, "rib_factor_label"):
+            self.rib_factor_label.setText(f"Factor (× wall): {rb_factor}")
+       
+        # ---- Per-feature detail tables ----
+        def add_row(table: QTableWidget, name, value):
+            row = table.rowCount()
+            table.insertRow(row)
+            table.setItem(row, 0, QTableWidgetItem(str(name)))
+            table.setItem(row, 1, QTableWidgetItem(str(value)))
+
+        # Wall Thickness details
+        if hasattr(self, "thickness_table"):
+            self.thickness_table.setRowCount(0)
+            add_row(self.thickness_table, "Global thickness – smallest dim", g_smallest)
+            add_row(self.thickness_table, "Local thickness – min local", l_min)
+            add_row(self.thickness_table, "Thin vertices", l_count)
+
+        # Sharp Corners details
+        if hasattr(self, "sharp_table"):
+            self.sharp_table.setRowCount(0)
+            add_row(self.sharp_table, "Sharp corners – edge count", c_num)
+            add_row(
+                self.sharp_table,
+                "Angle threshold (deg)",
+                corner_info.get("angle_threshold_deg", "-"),
+            )
+            add_row(
+                self.sharp_table,
+                "Max sharp angle (deg)",
+                corner_info.get("max_sharp_angle_deg", "-"),
+            )
+
+        # Draft details
+        if hasattr(self, "draft_table"):
+            self.draft_table.setRowCount(0)
+            add_row(self.draft_table, "Faces below min draft", d_bad_faces)
+            add_row(
+                self.draft_table,
+                "Min draft angle (deg)",
+                draft_info.get("min_draft_angle", "-"),
+            )
+            add_row(
+                self.draft_table,
+                "Draft threshold (deg)",
+                draft_info.get("angle_threshold_deg", "-"),
+            )
+            add_row(
+                self.draft_table,
+                "Pull direction",
+                self.combo_pull.currentText(),
+            )
+
+        # Undercuts details
+        if hasattr(self, "undercut_table"):
+            self.undercut_table.setRowCount(0)
+            add_row(self.undercut_table, "Undercut faces", u_num_faces)
+            add_row(
+                self.undercut_table,
+                "Angle threshold (deg)",
+                und_info.get("angle_threshold_deg", "-"),
+            )
+            add_row(
+                self.undercut_table,
+                "Max undercut angle (deg)",
+                und_info.get("max_undercut_angle_deg", "-"),
+            )
+
+        # Rib/Boss details
+        if hasattr(self, "rib_table"):
+            self.rib_table.setRowCount(0)
+            add_row(
+                self.rib_table,
+                "Nominal wall thickness",
+                rib_boss_info.get("base_wall_thickness", "-"),
+            )
+            add_row(
+                self.rib_table,
+                "Max thickness",
+                rib_boss_info.get("max_thickness", "-"),
+            )
+            add_row(self.rib_table, "Factor (× wall)", rb_factor)
+            add_row(
+                self.rib_table,
+                "Threshold thickness",
+                rib_boss_info.get("threshold", "-"),
+            )
+            add_row(
+                self.rib_table,
+                "Over-thick vertices",
+                rb_num,
+            )
     # ------------------------------------------------------------------
     # Export DFM report
     # ------------------------------------------------------------------
@@ -523,7 +731,7 @@ class MainWindow(QMainWindow):
         corner_info = checks.get("sharp_corners", {})
         draft_info = checks.get("draft_angle", {})
         und_info = checks.get("undercuts", {})
-        rib_boss_info = checks.get("rib_boss", {})  
+        rib_boss_info = checks.get("rib_boss", {})
 
         lines = []
         lines.append("SmartDFM – Injection Molding DFM Report")
@@ -652,16 +860,18 @@ class MainWindow(QMainWindow):
     # Load, DFM, and display
     # ------------------------------------------------------------------
     def load_and_display_stl(
-            self, 
-            file_path: str,
-            active_check: str | None = None,    
-            show_all_warnings: bool = False,
-        ):
+        self,
+        file_path: str,
+        active_check: str | None = None,
+        show_all_warnings: bool = False,
+    ):
         """
         Load STL, run DFM checks, and display mesh.
         Thin regions (by local wall thickness) are colored red.
         Sharp corners are colored blue.
         Bad draft angle (insufficient draft) are colored green.
+        Undercuts are yellow.
+        Rib/Boss over-thickness is orange.
         """
         try:
             vertices, faces = load_stl(file_path)
@@ -689,13 +899,6 @@ class MainWindow(QMainWindow):
             )
             dfm_summary = dfm_results.get("summary", "DFM: no summary")
             checks = dfm_results.get("checks", {})
-            def _maybe_warn(check_key: str, title: str, message: str):
-            # If this is a checkbox-triggered refresh,
-            # show popup ONLY for the check that was toggled.
-                if not show_all_warnings:
-                    if active_check != check_key:
-                        return
-                QMessageBox.warning(self, title, message)
 
             # Store for export / rerun
             self.last_dfm_results = dfm_results
@@ -725,7 +928,26 @@ class MainWindow(QMainWindow):
             max_extent = np.abs(vertices_centered).max()
             if max_extent > 0:
                 vertices_centered = vertices_centered / max_extent * 10.0
+            
+            # Compute bounding box in centered coordinates
+            min_c = vertices_centered.min(axis=0)
+            max_c = vertices_centered.max(axis=0)
+            extent_c = max_c - min_c
+            max_extent_c = float(np.max(extent_c)) if np.any(extent_c) else 10.0
 
+            # Position the axis slightly outside the model (e.g., near one corner)
+            if hasattr(self, "axis_item"):
+                # Size the axis at ~20% of model size
+                axis_size = max_extent_c * 0.2 if max_extent_c > 0 else 5.0
+                self.axis_item.setSize(x=axis_size, y=axis_size, z=axis_size)
+
+                # Place it a bit “below/left/front” of the bounding box
+                offset = 0.1 * extent_c  # small margin
+                axis_pos = min_c - offset
+
+                # IMPORTANT: GLAxisItem has no setPos -> use transforms
+                self.axis_item.resetTransform()
+                self.axis_item.translate(axis_pos[0], axis_pos[1], axis_pos[2])
             # Build per-vertex colors
             vertex_colors = np.zeros((vertices.shape[0], 4), dtype=float)
             vertex_colors[:, :] = [0.7, 0.7, 0.7, 1.0]  # grey default
@@ -769,54 +991,54 @@ class MainWindow(QMainWindow):
                     rib_bad_mask = rb
 
             # --- Apply checkbox filters ---
-            if not self.chk_show_thickness.isChecked():
+            # --- Apply active_check filter ---
+            # Show only the issue associated with active_check.
+            # If active_check is None, show no special highlights (all grey).
+            if active_check is None:
                 thin_mask[:] = False
-            if not self.chk_show_draft.isChecked():
-                draft_bad_mask[:] = False
-            if not self.chk_show_corners.isChecked():
                 corner_vertex_mask[:] = False
-            if not self.chk_show_undercuts.isChecked():
+                draft_bad_mask[:] = False
                 undercut_bad_mask[:] = False
-            if not self.chk_show_rib_boss.isChecked():
                 rib_bad_mask[:] = False
+            else:
+                if active_check != "local_thickness":
+                    thin_mask[:] = False
+                if active_check != "sharp_corners":
+                    corner_vertex_mask[:] = False
+                if active_check != "draft_angle":
+                    draft_bad_mask[:] = False
+                if active_check != "undercuts":
+                    undercut_bad_mask[:] = False
+                if active_check != "rib_boss":
+                    rib_bad_mask[:] = False
 
-            # --- Assign colors with priority ---
-            # Priority:
-            #   1) Undercuts – yellow
-            #   2) Thin regions – red
-            #   3) Rib/Boss over-thick – orange
-            #   4) Draft issues – green
-            #   5) Sharp corners – blue
+            # --- Assign colors: GOOD = green, BAD = red for active feature ---
+            # Start with neutral grey
+            vertex_colors = np.zeros((vertices.shape[0], 4), dtype=float)
+            vertex_colors[:, :] = [0.7, 0.7, 0.7, 1.0]
 
-            # 1) Undercuts: yellow
-            vertex_colors[undercut_bad_mask] = [1.0, 1.0, 0.0, 1.0]  # yellow
+            if active_check is not None:
+                # Choose the "bad" mask based on the active feature
+                if active_check == "local_thickness":
+                    bad_mask = thin_mask
+                elif active_check == "sharp_corners":
+                    bad_mask = corner_vertex_mask
+                elif active_check == "draft_angle":
+                    bad_mask = draft_bad_mask
+                elif active_check == "undercuts":
+                    bad_mask = undercut_bad_mask
+                elif active_check == "rib_boss":
+                    bad_mask = rib_bad_mask
+                else:
+                    bad_mask = np.zeros(vertices.shape[0], dtype=bool)
 
-            # 2) Thin regions: red (not undercut)
-            thin_only = thin_mask & (~undercut_bad_mask)
-            vertex_colors[thin_only] = [1.0, 0.0, 0.0, 1.0]  # red
+                ok_mask = ~bad_mask
 
-            # 3) Rib/Boss over-thickness: orange (not undercut, not thin)
-            rib_only = rib_bad_mask & (~undercut_bad_mask) & (~thin_mask)
-            vertex_colors[rib_only] = [1.0, 0.5, 0.0, 1.0]  # orange
-
-            # 4) Draft issues: green (not undercut, not thin, not rib)
-            draft_only = (
-                draft_bad_mask
-                & (~undercut_bad_mask)
-                & (~thin_mask)
-                & (~rib_bad_mask)
-            )
-            vertex_colors[draft_only] = [0.0, 1.0, 0.0, 1.0]  # green
-
-            # 5) Sharp corners: blue (only where nothing else applied)
-            corner_only = (
-                corner_vertex_mask
-                & (~thin_mask)
-                & (~draft_bad_mask)
-                & (~undercut_bad_mask)
-                & (~rib_bad_mask)
-            )
-            vertex_colors[corner_only] = [0.0, 0.0, 1.0, 1.0]  # blue
+                # Non-defect regions = green
+                vertex_colors[ok_mask] = [0.0, 1.0, 0.0, 1.0]   # green
+                # Defect regions = red
+                vertex_colors[bad_mask] = [1.0, 0.0, 0.0, 1.0]  # red
+            # else: active_check is None → leave everything grey
 
             mesh_data = gl.MeshData(
                 vertexes=vertices_centered,
@@ -845,8 +1067,6 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, title, message)
 
             # Warnings
-            # Global thickness
-            # GLOBAL thickness
             if global_chk and global_chk.get("status") == "WARNING":
                 _maybe_warn(
                     "global_thickness",
@@ -854,7 +1074,6 @@ class MainWindow(QMainWindow):
                     global_chk.get("message", "")
                 )
 
-            # LOCAL thickness
             if local_chk and local_chk.get("status") == "WARNING":
                 _maybe_warn(
                     "local_thickness",
@@ -862,7 +1081,6 @@ class MainWindow(QMainWindow):
                     local_chk.get("message", "")
                 )
 
-            # SHARP corners
             if corner_chk and corner_chk.get("status") == "WARNING":
                 _maybe_warn(
                     "sharp_corners",
@@ -870,7 +1088,6 @@ class MainWindow(QMainWindow):
                     corner_chk.get("message", "")
                 )
 
-            # DRAFT angle
             if draft_chk and draft_chk.get("status") == "WARNING":
                 _maybe_warn(
                     "draft_angle",
@@ -878,20 +1095,20 @@ class MainWindow(QMainWindow):
                     draft_chk.get("message", "")
                 )
 
-            # UNDERCUTS
             if undercut_chk and undercut_chk.get("status") == "WARNING":
                 _maybe_warn(
                     "undercuts",
                     "DFM Warning – Undercuts",
                     undercut_chk.get("message", "")
                 )
-            # RIB/BOSS thickness
+
             if rib_boss_chk and rib_boss_chk.get("status") == "WARNING":
                 _maybe_warn(
                     "rib_boss",
                     "DFM Warning – Rib/Boss Thickness",
                     rib_boss_chk.get("message", "Over-thick rib/boss regions detected."),
                 )
+
             # Status bar
             if hasattr(self, "status"):
                 msg = (
@@ -902,7 +1119,6 @@ class MainWindow(QMainWindow):
                     f"{dfm_summary}"
                 )
                 self.status.showMessage(msg)
-        
 
         except Exception as e:
             QMessageBox.critical(
@@ -913,9 +1129,7 @@ class MainWindow(QMainWindow):
             if hasattr(self, "status"):
                 self.status.showMessage(f"Error loading STL: {e}")
 
-   
 
-    
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     window = MainWindow()
