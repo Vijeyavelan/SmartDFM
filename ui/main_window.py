@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QFrame, QScrollArea, QToolButton, QButtonGroup, QStackedWidget
 )
 from PySide6.QtGui import QAction
-
+from PySide6.QtGui import QGuiApplication
 import pyqtgraph.opengl as gl
 
 from core.stl_loader import load_stl
@@ -26,7 +26,18 @@ class MainWindow(QMainWindow):
         super().__init__()
 
         self.setWindowTitle("SmartDFM - STL Viewer (Injection Molding DFM)")
-        self.resize(1200, 400)
+
+        # 🔽 replace old self.resize(...) with this block
+        screen = QGuiApplication.primaryScreen().availableGeometry()
+        width  = int(screen.width() * 0.75)   # 75% of screen width
+        height = int(screen.height() * 0.75)  # 75% of screen height
+        self.resize(width, height)
+
+        # center the window on screen
+        self.move(
+            screen.x() + (screen.width() - width) // 2,
+            screen.y() + (screen.height() - height) // 2,
+        )
 
         # ---- Status bar ----
         self.status = self.statusBar()
@@ -94,9 +105,71 @@ class MainWindow(QMainWindow):
 
         # Add a basic grid so you see orientation
         grid = gl.GLGridItem()
-        grid.setSize(20, 20)
+        grid.setSize(30, 30)
         grid.setSpacing(1, 1)
         self.view.addItem(grid)
+
+        # --- Fixed XYZ axis at one corner of the grid ---
+        # Grid spans roughly -10..+10 in X/Y (size=20), so use a corner near (-10, -10, 0)
+        axis_origin = np.array([-15.0, -15.0, 0.0], dtype=float)  # slightly inside the grid edge
+        axis_len = 3.0  # length of each axis line
+
+        # X axis: red
+        x_axis_pos = np.array([
+            axis_origin,
+            axis_origin + np.array([axis_len, 0.0, 0.0], dtype=float)
+        ])
+        self.grid_axis_x = gl.GLLinePlotItem(
+            pos=x_axis_pos,
+            color=(1.0, 0.0, 0.0, 1.0),
+            width=3,
+            antialias=True,
+        )
+        self.view.addItem(self.grid_axis_x)
+
+        # Y axis: green
+        y_axis_pos = np.array([
+            axis_origin,
+            axis_origin + np.array([0.0, axis_len, 0.0], dtype=float)
+        ])
+        self.grid_axis_y = gl.GLLinePlotItem(
+            pos=y_axis_pos,
+            color=(0.0, 1.0, 0.0, 1.0),
+            width=3,
+            antialias=True,
+        )
+        self.view.addItem(self.grid_axis_y)
+
+        # Z axis: blue
+        z_axis_pos = np.array([
+            axis_origin,
+            axis_origin + np.array([0.0, 0.0, axis_len], dtype=float)
+        ])
+        self.grid_axis_z = gl.GLLinePlotItem(
+            pos=z_axis_pos,
+            color=(0.0, 0.0, 1.0, 1.0),
+            width=3,
+            antialias=True,
+        )
+        self.view.addItem(self.grid_axis_z)
+
+        # --- Axis legend labels (screen overlay) ---
+        self.axis_label_x = QLabel("X", self)
+        self.axis_label_x.setStyleSheet("color: red; font-weight: bold;")
+        self.axis_label_x.adjustSize()
+
+        self.axis_label_y = QLabel("Y", self)
+        self.axis_label_y.setStyleSheet("color: green; font-weight: bold;")
+        self.axis_label_y.adjustSize()
+
+        self.axis_label_z = QLabel("Z", self)
+        self.axis_label_z.setStyleSheet("color: blue; font-weight: bold;")
+        self.axis_label_z.adjustSize()
+
+        # make sure they draw above other widgets
+        self.axis_label_x.raise_()
+        self.axis_label_y.raise_()
+        self.axis_label_z.raise_()
 
         # Store current mesh item
         self.mesh_item = None
@@ -369,6 +442,36 @@ class MainWindow(QMainWindow):
         # ---- Menu bar ----
         self._create_menu()
 
+        self.update_axis_legend()
+
+    def update_axis_legend(self):
+        """Place X/Y/Z labels near the bottom-left corner of the 3D view."""
+        if not hasattr(self, "view"):
+            return
+
+        rect = self.view.geometry()
+        margin = 24  # pixels from edges
+
+        # bottom-left of GL view in MainWindow coordinates
+        x0 = rect.left() + margin
+        y0 = rect.bottom() - margin
+
+        # place labels with slight horizontal spacing
+        if hasattr(self, "axis_label_x"):
+            self.axis_label_x.move(x0, y0)
+            self.axis_label_x.raise_()
+
+        if hasattr(self, "axis_label_y"):
+            self.axis_label_y.move(x0 + 18, y0)
+            self.axis_label_y.raise_()
+
+        if hasattr(self, "axis_label_z"):
+            self.axis_label_z.move(x0 + 36, y0)
+            self.axis_label_z.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.update_axis_legend()
     # ------------------------------------------------------------------
     # Menu
     # ------------------------------------------------------------------
